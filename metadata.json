@@ -1,0 +1,6 @@
+{
+  "name": "هم‌صدا",
+  "description": "پخش همزمان و هماهنگ موسیقی روی چندین دستگاه با وای‌فای، پلی‌لیست مشترک و کنترل از راه دور",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
