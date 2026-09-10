@@ -69,6 +69,7 @@ import com.example.model.DeviceSpeaker
 import com.example.ui.PersianFormatters
 import com.example.ui.UiState
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.BatterySaverCard
 
 @Composable
 fun HostScreen(
@@ -81,6 +82,7 @@ fun HostScreen(
     onSpeakerVolumeChange: (String, Float) -> Unit,
     onToggleSpeakerMute: (String) -> Unit,
     onToggleLiveMic: () -> Unit = {},
+    onToggleBatterySaver: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -300,6 +302,18 @@ fun HostScreen(
                 isBroadcasting = state.isLiveMicBroadcasting,
                 micLevel = state.liveMicLevel,
                 onToggleLiveMic = onToggleLiveMic
+            )
+        }
+
+        // Battery & Network Optimization Card
+        item {
+            BatterySaverCard(
+                isBatterySaverEnabled = state.isBatterySaverEnabled,
+                isLowBattery = state.isSystemLowBattery,
+                batteryPercent = state.batteryPercent,
+                isCharging = state.isBatteryCharging,
+                syncIntervalMs = state.syncIntervalMs,
+                onToggleBatterySaver = onToggleBatterySaver
             )
         }
 

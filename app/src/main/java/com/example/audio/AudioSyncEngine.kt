@@ -32,6 +32,18 @@ class AudioSyncEngine(
     private val _syncDriftMs = MutableStateFlow(0L)
     val syncDriftMs: StateFlow<Long> = _syncDriftMs.asStateFlow()
 
+    // Battery saver state and dynamic sync frequency
+    var isBatterySaverActive: Boolean = false
+        set(value) {
+            field = value
+            _isBatterySaverActiveState.value = value
+        }
+    private val _isBatterySaverActiveState = MutableStateFlow(false)
+    val isBatterySaverActiveState: StateFlow<Boolean> = _isBatterySaverActiveState.asStateFlow()
+
+    private val _currentSyncIntervalMs = MutableStateFlow(400L)
+    val currentSyncIntervalMs: StateFlow<Long> = _currentSyncIntervalMs.asStateFlow()
+
     private var syncJob: Job? = null
     private var activeSyncClient: SyncClient? = null
     private var lastLoadedTrackId: String? = null
@@ -66,7 +78,23 @@ class AudioSyncEngine(
                 } catch (e: Exception) {
                     Log.w(TAG, "Speaker sync loop error: ${e.message}")
                 }
-                delay(400)
+
+                // Adaptive sync interval:
+                // When battery saver is active, reduce sync polling frequency to conserve Wi-Fi radio power.
+                // Because playback position is continuously interpolated using the synchronized hardware clock,
+                // audio remains rock-solid without any stutter or drift even with relaxed polling.
+                val delayMs = if (isBatterySaverActive) {
+                    val drift = abs(smoothedDrift)
+                    when {
+                        drift < 45.0 -> 1600L // Stable in deadband: poll every 1.6s (reduces network transmissions by ~75%)
+                        drift < 150.0 -> 900L  // Slight drift: poll every 900ms
+                        else -> 500L          // Larger drift or state catch-up: poll faster to re-lock
+                    }
+                } else {
+                    400L
+                }
+                _currentSyncIntervalMs.value = delayMs
+                delay(delayMs)
             }
         }
     }
@@ -77,6 +105,7 @@ class AudioSyncEngine(
         activeSyncClient = null
         localPlayer.pause()
         _syncDriftMs.value = 0L
+        _currentSyncIntervalMs.value = 400L
         isFirstDrift = true
         smoothedDrift = 0.0
         largeDriftConsecutiveCount = 0

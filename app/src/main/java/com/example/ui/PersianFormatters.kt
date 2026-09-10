@@ -23,4 +23,13 @@ object PersianFormatters {
         val prefix = if (offsetMs > 0) "+" else ""
         return "$prefix$offsetMs ms"
     }
+
+    fun formatLatency(ms: Long): String {
+        return if (ms >= 1000) {
+            val seconds = String.format("%.1f", ms / 1000.0)
+            "${toPersianDigits(seconds)} ثانیه"
+        } else {
+            "${toPersianDigits(ms.toString())} میلی‌ثانیه"
+        }
+    }
 }

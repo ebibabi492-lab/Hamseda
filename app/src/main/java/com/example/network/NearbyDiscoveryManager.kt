@@ -110,7 +110,17 @@ class NearbyDiscoveryManager(
             getPort = { port },
             getCurrentTrackTitle = getCurrentTrackTitle
         )
+        if (isBatterySaverActive) {
+            udpBroadcaster?.setBroadcastInterval(4500L)
+        }
         udpBroadcaster?.start()
+    }
+
+    private var isBatterySaverActive = false
+
+    fun setBatterySaverMode(enabled: Boolean) {
+        isBatterySaverActive = enabled
+        udpBroadcaster?.setBroadcastInterval(if (enabled) 4500L else 2000L)
     }
 
     fun stopHostPublishing() {

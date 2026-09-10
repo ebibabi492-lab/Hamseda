@@ -62,6 +62,7 @@ import com.example.ui.PersianFormatters
 import com.example.ui.SpeakerConnectionStatus
 import com.example.ui.UiState
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.BatterySaverCard
 import com.example.ui.components.SyncOffsetControl
 
 @Composable
@@ -73,6 +74,7 @@ fun SpeakerScreen(
     onManualOffsetChange: (Long) -> Unit,
     onSpeakerVolumeChange: (Float) -> Unit,
     onRefreshDiscovery: () -> Unit = {},
+    onToggleBatterySaver: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showManualDialog by remember { mutableStateOf(false) }
@@ -306,7 +308,31 @@ fun SpeakerScreen(
                     onOffsetChange = onManualOffsetChange
                 )
             }
+
+            // Battery & Network Optimization Card (Connected state)
+            item {
+                BatterySaverCard(
+                    isBatterySaverEnabled = state.isBatterySaverEnabled,
+                    isLowBattery = state.isSystemLowBattery,
+                    batteryPercent = state.batteryPercent,
+                    isCharging = state.isBatteryCharging,
+                    syncIntervalMs = state.syncIntervalMs,
+                    onToggleBatterySaver = onToggleBatterySaver
+                )
+            }
         } else {
+            // Battery & Network Optimization Card (Disconnected / Standby state)
+            item {
+                BatterySaverCard(
+                    isBatterySaverEnabled = state.isBatterySaverEnabled,
+                    isLowBattery = state.isSystemLowBattery,
+                    batteryPercent = state.batteryPercent,
+                    isCharging = state.isBatteryCharging,
+                    syncIntervalMs = state.syncIntervalMs,
+                    onToggleBatterySaver = onToggleBatterySaver
+                )
+            }
+
             // Disconnected: Show radar and host discovery list
             item {
                 Row(

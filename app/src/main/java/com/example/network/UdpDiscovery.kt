@@ -18,7 +18,13 @@ class UdpBeaconBroadcaster(
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile
     private var isBroadcasting = false
+    @Volatile
+    private var broadcastIntervalMs = 2000L
     private var socket: DatagramSocket? = null
+
+    fun setBroadcastInterval(intervalMs: Long) {
+        broadcastIntervalMs = intervalMs.coerceAtLeast(1000L)
+    }
 
     fun start() {
         if (isBroadcasting) return
@@ -48,7 +54,7 @@ class UdpBeaconBroadcaster(
                     } catch (e: Exception) {
                         Log.w(TAG, "Broadcast error: ${e.message}")
                     }
-                    Thread.sleep(2000)
+                    Thread.sleep(broadcastIntervalMs)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Broadcaster socket failed: ${e.message}")

@@ -1,8 +1,14 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -85,6 +91,14 @@ data class UiState(
     // Shared Playlist
     val playlist: List<Track> = emptyList(),
 
+    // Battery Saver & Network Sync Optimization
+    val isBatterySaverEnabled: Boolean = false,
+    val isSystemLowBattery: Boolean = false,
+    val batteryPercent: Int = 100,
+    val isBatteryCharging: Boolean = false,
+    val userExplicitBatterySaverPreference: Boolean = false,
+    val syncIntervalMs: Long = 400L,
+
     // Status / Toast message in Persian
     val message: String? = null
 )
@@ -121,6 +135,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSyncClient: SyncClient? = null
 
     private var positionTickerJob: Job? = null
+
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateBatteryStatus(intent)
+        }
+    }
 
     init {
         val ip = NetworkUtils.getLocalIpAddress()
@@ -219,6 +239,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(syncDriftMs = drift) }
             }
         }
+
+        // Listen for dynamic sync interval from syncEngine
+        viewModelScope.launch {
+            syncEngine.currentSyncIntervalMs.collect { interval ->
+                _uiState.update { it.copy(syncIntervalMs = interval) }
+            }
+        }
+
+        // Monitor battery level and charging state
+        try {
+            val batteryFilter = IntentFilter().apply {
+                addAction(Intent.ACTION_BATTERY_CHANGED)
+                addAction(Intent.ACTION_POWER_CONNECTED)
+                addAction(Intent.ACTION_POWER_DISCONNECTED)
+                addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            }
+            val stickyBatteryIntent = application.registerReceiver(batteryReceiver, batteryFilter)
+            updateBatteryStatus(stickyBatteryIntent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register battery receiver: ${e.message}")
+        }
+    }
+
+    private fun updateBatteryStatus(intent: Intent?) {
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val percent = if (level >= 0 && scale > 0) (level * 100) / scale else 100
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+
+        val powerManager = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isSystemPowerSave = powerManager?.isPowerSaveMode == true
+        val isLowBattery = percent <= 20 || isSystemPowerSave
+
+        _uiState.update { current ->
+            val shouldAutoEnable = !current.userExplicitBatterySaverPreference && isLowBattery && !isCharging
+            val effectiveEnabled = if (current.userExplicitBatterySaverPreference) {
+                current.isBatterySaverEnabled
+            } else {
+                shouldAutoEnable || current.isBatterySaverEnabled
+            }
+
+            current.copy(
+                batteryPercent = percent,
+                isBatteryCharging = isCharging,
+                isSystemLowBattery = isLowBattery,
+                isBatterySaverEnabled = effectiveEnabled
+            )
+        }
+
+        applyBatterySaverToEngines()
+    }
+
+    fun toggleBatterySaver() {
+        _uiState.update { current ->
+            val newEnabled = !current.isBatterySaverEnabled
+            current.copy(
+                isBatterySaverEnabled = newEnabled,
+                userExplicitBatterySaverPreference = true,
+                message = if (newEnabled)
+                    "حالت بهینه‌سازی باتری فعال شد: فرکانس شبکه کاهش یافت (هماهنگی پایدار)"
+                else
+                    "حالت بهینه‌سازی باتری غیرفعال شد: فرکانس شبکه به حالت عادی بازگشت"
+            )
+        }
+        applyBatterySaverToEngines()
+    }
+
+    private fun applyBatterySaverToEngines() {
+        val isSaver = _uiState.value.isBatterySaverEnabled
+        syncEngine.isBatterySaverActive = isSaver
+        nearbyDiscoveryManager.setBatterySaverMode(isSaver)
     }
 
     fun setAppMode(mode: AppMode) {
@@ -707,6 +799,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        try {
+            getApplication<Application>().unregisterReceiver(batteryReceiver)
+        } catch (e: Exception) {
+            // ignore
+        }
         stopHostMode()
         stopSpeakerMode()
         nearbyDiscoveryManager.release()

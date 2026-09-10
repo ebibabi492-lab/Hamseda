@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayCircle
@@ -92,7 +95,12 @@ fun HamSedaApp(
                 HamSedaTopBar(
                     currentMode = state.mode,
                     localIp = state.localIp,
-                    onModeSelected = { mode -> viewModel.setAppMode(mode) }
+                    isBatterySaverEnabled = state.isBatterySaverEnabled,
+                    isLowBattery = state.isSystemLowBattery,
+                    batteryPercent = state.batteryPercent,
+                    isCharging = state.isBatteryCharging,
+                    onModeSelected = { mode -> viewModel.setAppMode(mode) },
+                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
                 )
             },
             bottomBar = {
@@ -135,7 +143,8 @@ fun HamSedaApp(
                                     onMasterVolumeChange = { vol -> viewModel.setMasterVolume(vol) },
                                     onSpeakerVolumeChange = { id, vol -> viewModel.setSpeakerVolume(id, vol) },
                                     onToggleSpeakerMute = { id -> viewModel.toggleSpeakerMute(id) },
-                                    onToggleLiveMic = { viewModel.toggleLiveMic() }
+                                    onToggleLiveMic = { viewModel.toggleLiveMic() },
+                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
                                 )
                             } else {
                                 SpeakerScreen(
@@ -145,7 +154,8 @@ fun HamSedaApp(
                                     onDisconnect = { viewModel.disconnectSpeaker() },
                                     onManualOffsetChange = { offset -> viewModel.setManualLatencyOffset(offset) },
                                     onSpeakerVolumeChange = { vol -> viewModel.setLocalSpeakerVolume(vol) },
-                                    onRefreshDiscovery = { viewModel.refreshDiscovery() }
+                                    onRefreshDiscovery = { viewModel.refreshDiscovery() },
+                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
                                 )
                             }
                         }
@@ -191,7 +201,12 @@ fun HamSedaApp(
 private fun HamSedaTopBar(
     currentMode: AppMode,
     localIp: String,
-    onModeSelected: (AppMode) -> Unit
+    isBatterySaverEnabled: Boolean,
+    isLowBattery: Boolean,
+    batteryPercent: Int,
+    isCharging: Boolean,
+    onModeSelected: (AppMode) -> Unit,
+    onToggleBatterySaver: () -> Unit
 ) {
     TopAppBar(
         title = {
@@ -225,28 +240,90 @@ private fun HamSedaTopBar(
                     )
                 }
 
-                // Minimalist Mode Selector Pill (میزبان vs بلندگو)
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.padding(end = 12.dp)
+                // Right side: Battery Saver Quick Toggle & Mode Selector Pill
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(3.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Battery Saver quick badge
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (isBatterySaverEnabled) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)
+                        } else if (isLowBattery && !isCharging) {
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { onToggleBatterySaver() }
+                            .testTag("top_bar_battery_pill")
                     ) {
-                        ModePillItem(
-                            title = "میزبان",
-                            isSelected = currentMode == AppMode.HOST,
-                            onClick = { onModeSelected(AppMode.HOST) },
-                            testTag = "pill_mode_host"
-                        )
-                        ModePillItem(
-                            title = "بلندگو",
-                            isSelected = currentMode == AppMode.SPEAKER,
-                            onClick = { onModeSelected(AppMode.SPEAKER) },
-                            testTag = "pill_mode_speaker"
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = when {
+                                    isCharging -> Icons.Default.BatteryChargingFull
+                                    isLowBattery -> Icons.Default.BatteryAlert
+                                    else -> Icons.Default.BatteryFull
+                                },
+                                contentDescription = "باتری",
+                                tint = when {
+                                    isBatterySaverEnabled -> MaterialTheme.colorScheme.primary
+                                    isLowBattery && !isCharging -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "${PersianFormatters.toPersianDigits(batteryPercent.toString())}٪",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = when {
+                                    isBatterySaverEnabled -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    isLowBattery && !isCharging -> MaterialTheme.colorScheme.onErrorContainer
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                            if (isBatterySaverEnabled) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary)
+                                )
+                            }
+                        }
+                    }
+
+                    // Minimalist Mode Selector Pill (میزبان vs بلندگو)
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(end = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ModePillItem(
+                                title = "میزبان",
+                                isSelected = currentMode == AppMode.HOST,
+                                onClick = { onModeSelected(AppMode.HOST) },
+                                testTag = "pill_mode_host"
+                            )
+                            ModePillItem(
+                                title = "بلندگو",
+                                isSelected = currentMode == AppMode.SPEAKER,
+                                onClick = { onModeSelected(AppMode.SPEAKER) },
+                                testTag = "pill_mode_speaker"
+                            )
+                        }
                     }
                 }
             }
