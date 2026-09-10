@@ -35,6 +35,11 @@ class AudioSyncEngine(
     private var syncJob: Job? = null
     private var activeSyncClient: SyncClient? = null
     private var lastLoadedTrackId: String? = null
+    private var smoothedDrift: Double = 0.0
+    private var isFirstDrift = true
+    private var largeDriftConsecutiveCount = 0
+
+    var onStateUpdated: ((SyncPlaybackState) -> Unit)? = null
 
     fun setManualOffset(offset: Long) {
         _manualOffsetMs.value = offset.coerceIn(-300L, 300L)
@@ -43,6 +48,9 @@ class AudioSyncEngine(
     fun startSpeakerSync(syncClient: SyncClient) {
         stopSpeakerSync()
         activeSyncClient = syncClient
+        isFirstDrift = true
+        smoothedDrift = 0.0
+        largeDriftConsecutiveCount = 0
 
         syncJob = scope.launch(Dispatchers.IO) {
             // Initial precision clock sync
@@ -53,11 +61,12 @@ class AudioSyncEngine(
                     val hostState = syncClient.fetchState()
                     if (hostState != null) {
                         applySpeakerSync(hostState, syncClient)
+                        onStateUpdated?.invoke(hostState)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Speaker sync loop error: ${e.message}")
                 }
-                delay(350)
+                delay(400)
             }
         }
     }
@@ -68,16 +77,29 @@ class AudioSyncEngine(
         activeSyncClient = null
         localPlayer.pause()
         _syncDriftMs.value = 0L
+        isFirstDrift = true
+        smoothedDrift = 0.0
+        largeDriftConsecutiveCount = 0
     }
 
     private fun applySpeakerSync(state: SyncPlaybackState, client: SyncClient) {
         val estimatedHostNow = client.getEstimatedHostTime()
+
+        // Duck music if live microphone broadcast from host is active
+        if (state.isLiveMicActive) {
+            localPlayer.duckForLiveMic()
+        } else {
+            localPlayer.restoreAfterLiveMic()
+        }
 
         // Check if track changed
         if (state.trackId.isNotEmpty() && state.trackId != lastLoadedTrackId) {
             lastLoadedTrackId = state.trackId
             val streamUrl = client.getStreamUrl()
             localPlayer.prepareAndPlayStream(streamUrl, state.positionMs)
+            isFirstDrift = true
+            smoothedDrift = 0.0
+            largeDriftConsecutiveCount = 0
             return
         }
 
@@ -85,10 +107,11 @@ class AudioSyncEngine(
             if (localPlayer.isPlaying()) {
                 localPlayer.pause()
             }
-            if (abs(localPlayer.getCurrentPosition() - state.positionMs) > 100) {
+            if (abs(localPlayer.getCurrentPosition() - state.positionMs) > 150) {
                 localPlayer.seekTo(state.positionMs)
             }
             _syncDriftMs.value = 0L
+            isFirstDrift = true
             return
         }
 
@@ -97,7 +120,17 @@ class AudioSyncEngine(
         val expectedPosition = state.positionMs + elapsedSinceHostSnapshot + _manualOffsetMs.value
         val actualPosition = localPlayer.getCurrentPosition()
 
-        val drift = actualPosition - expectedPosition
+        val rawDrift = actualPosition - expectedPosition
+
+        // Apply Exponential Moving Average (EMA) low-pass filter to reject measurement jitter
+        if (isFirstDrift) {
+            smoothedDrift = rawDrift.toDouble()
+            isFirstDrift = false
+        } else {
+            smoothedDrift = (0.70 * smoothedDrift) + (0.30 * rawDrift)
+        }
+
+        val drift = smoothedDrift.toLong()
         _syncDriftMs.value = drift
 
         if (!localPlayer.isPlaying()) {
@@ -108,32 +141,47 @@ class AudioSyncEngine(
 
         val absDrift = abs(drift)
         when {
-            // Very close (<15ms): perfect sync, normal speed
-            absDrift < 15 -> {
+            // Perfect sync deadband (< 40ms): 1.0f speed, zero buffer resets
+            absDrift < 40 -> {
+                largeDriftConsecutiveCount = 0
                 localPlayer.adjustPlaybackRate(1.0f)
             }
-            // Slight drift (15ms - 80ms): micro speed-tune to seamlessly glide into phase
-            absDrift in 15..80 -> {
+            // Gentle micro speed glide (40ms - 120ms): 0.98x / 1.02x
+            absDrift in 40..120 -> {
+                largeDriftConsecutiveCount = 0
                 if (drift > 0) {
-                    // We are slightly ahead, slow down slightly
-                    localPlayer.adjustPlaybackRate(0.97f)
+                    localPlayer.adjustPlaybackRate(0.98f)
                 } else {
-                    // We are slightly behind, speed up slightly
-                    localPlayer.adjustPlaybackRate(1.03f)
+                    localPlayer.adjustPlaybackRate(1.02f)
                 }
             }
-            // Moderate drift (80ms - 180ms)
-            absDrift in 81..180 -> {
+            // Moderate drift (121ms - 300ms): 0.95x / 1.05x
+            absDrift in 121..300 -> {
+                largeDriftConsecutiveCount = 0
                 if (drift > 0) {
-                    localPlayer.adjustPlaybackRate(0.94f)
+                    localPlayer.adjustPlaybackRate(0.95f)
                 } else {
-                    localPlayer.adjustPlaybackRate(1.06f)
+                    localPlayer.adjustPlaybackRate(1.05f)
                 }
             }
-            // Significant drift (> 180ms): direct seek to re-align
+            // Noticeable drift (301ms - 1200ms): 0.92x / 1.08x
+            absDrift in 301..1200 -> {
+                largeDriftConsecutiveCount = 0
+                if (drift > 0) {
+                    localPlayer.adjustPlaybackRate(0.92f)
+                } else {
+                    localPlayer.adjustPlaybackRate(1.08f)
+                }
+            }
+            // Extreme drift (> 1200ms): only hard seek after 3 consecutive cycles
             else -> {
-                localPlayer.seekTo(expectedPosition.coerceAtLeast(0L))
-                localPlayer.adjustPlaybackRate(1.0f)
+                largeDriftConsecutiveCount++
+                if (largeDriftConsecutiveCount >= 3) {
+                    localPlayer.seekTo(expectedPosition.coerceAtLeast(0L))
+                    localPlayer.adjustPlaybackRate(1.0f)
+                    isFirstDrift = true
+                    largeDriftConsecutiveCount = 0
+                }
             }
         }
     }

@@ -105,7 +105,8 @@ class SyncClient(
                         durationMs = json.optLong("durationMs"),
                         hostTimestamp = json.optLong("hostTimestamp"),
                         scheduledStartHostTime = json.optLong("scheduledStartHostTime"),
-                        masterVolume = json.optDouble("masterVolume", 1.0).toFloat()
+                        masterVolume = json.optDouble("masterVolume", 1.0).toFloat(),
+                        isLiveMicActive = json.optBoolean("isLiveMicActive", false)
                     )
                 }
             }

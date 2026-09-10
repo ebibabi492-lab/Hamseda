@@ -138,6 +138,7 @@ class AudioHttpServer(
                         put("hostTimestamp", System.currentTimeMillis())
                         put("scheduledStartHostTime", state.scheduledStartHostTime)
                         put("masterVolume", state.masterVolume.toDouble())
+                        put("isLiveMicActive", state.isLiveMicActive)
                     }
                     sendJsonResponse(out, 200, json.toString())
                 }

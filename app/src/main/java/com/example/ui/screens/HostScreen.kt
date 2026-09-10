@@ -1,5 +1,15 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -7,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,6 +29,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -39,15 +52,19 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.model.DeviceSpeaker
 import com.example.ui.PersianFormatters
 import com.example.ui.UiState
@@ -63,6 +80,7 @@ fun HostScreen(
     onMasterVolumeChange: (Float) -> Unit,
     onSpeakerVolumeChange: (String, Float) -> Unit,
     onToggleSpeakerMute: (String) -> Unit,
+    onToggleLiveMic: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -274,6 +292,15 @@ fun HostScreen(
                     }
                 }
             }
+        }
+
+        // Live Microphone Streaming Card
+        item {
+            LiveMicBroadcastCard(
+                isBroadcasting = state.isLiveMicBroadcasting,
+                micLevel = state.liveMicLevel,
+                onToggleLiveMic = onToggleLiveMic
+            )
         }
 
         // Connected Speakers Title & Counter
@@ -488,6 +515,169 @@ private fun SpeakerDeviceItem(
                         thumbColor = MaterialTheme.colorScheme.secondary,
                         activeTrackColor = MaterialTheme.colorScheme.secondary
                     )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveMicBroadcastCard(
+    isBroadcasting: Boolean,
+    micLevel: Float,
+    onToggleLiveMic: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            onToggleLiveMic()
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("live_mic_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isBroadcasting)
+                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
+            else
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(if (isBroadcasting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isBroadcasting) "پخش زنده صدای میکروفن فعال است" else "پخش زنده میکروفن (بلندگوی آنلاین)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isBroadcasting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isBroadcasting) MaterialTheme.colorScheme.error.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                ) {
+                    Text(
+                        text = if (isBroadcasting) "زنده (LIVE)" else "بی‌درنگ",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isBroadcasting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Microphone Action Button with Pulse Effect
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(76.dp)
+            ) {
+                if (isBroadcasting) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .scale(pulseScale)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.25f))
+                    )
+                }
+
+                FilledIconButton(
+                    onClick = {
+                        val hasPermission = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasPermission) {
+                            onToggleLiveMic()
+                        } else {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(56.dp)
+                        .testTag("toggle_live_mic_button"),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (isBroadcasting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        contentColor = if (isBroadcasting) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (isBroadcasting) Icons.Default.Mic else Icons.Default.MicOff,
+                        contentDescription = "پخش زنده میکروفن",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = if (isBroadcasting) "برای توقف ضربه بزنید" else "برای صحبت از طریق بلندگوها ضربه بزنید",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // VU Meter level when active
+            if (isBroadcasting) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth(0.7f)
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(micLevel.coerceIn(0.05f, 1.0f))
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.error)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "در حال انتقال زنده به تمام گوشی‌های متصل...",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error
                 )
             }
         }

@@ -19,6 +19,53 @@ class LocalAudioPlayer(private val context: Context) {
 
     private var currentSourceKey: String = ""
     private var isPrepared = false
+    private var currentSpeed: Float = 1.0f
+    private var userVolume: Float = 1.0f
+    private var isDuckedForLiveMic: Boolean = false
+
+    fun duckForLiveMic() {
+        isDuckedForLiveMic = true
+        applyEffectiveVolume()
+    }
+
+    fun restoreAfterLiveMic() {
+        isDuckedForLiveMic = false
+        applyEffectiveVolume()
+    }
+
+    private fun applyEffectiveVolume() {
+        try {
+            val effective = if (isDuckedForLiveMic) (userVolume * 0.15f) else userVolume
+            val clamped = effective.coerceIn(0f, 1f)
+            mediaPlayer?.setVolume(clamped, clamped)
+        } catch (e: Exception) {
+            Log.w(TAG, "applyEffectiveVolume error: ${e.message}")
+        }
+    }
+
+    fun setVolume(volume: Float) {
+        userVolume = volume.coerceIn(0f, 1f)
+        applyEffectiveVolume()
+    }
+
+    fun adjustPlaybackRate(speed: Float) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isPrepared && mediaPlayer?.isPlaying == true) {
+                val clampedSpeed = speed.coerceIn(0.92f, 1.08f)
+                // Critical Fix: ONLY update playbackParams if speed genuinely changed by at least 0.015f.
+                // Re-assigning playbackParams continuously flushes the AudioTrack audio resampler buffer,
+                // which causes choppy, stuttering audio ("بریده بریده شدن صدا") especially at high volumes.
+                if (kotlin.math.abs(currentSpeed - clampedSpeed) >= 0.015f) {
+                    currentSpeed = clampedSpeed
+                    val params = mediaPlayer?.playbackParams ?: PlaybackParams()
+                    params.speed = clampedSpeed
+                    mediaPlayer?.playbackParams = params
+                }
+            }
+        } catch (e: Exception) {
+            // Speed adjustment might not be supported on all streams
+        }
+    }
 
     fun prepareAndPlayWavBytes(sourceKey: String, wavBytes: ByteArray, startPositionMs: Long = 0L) {
         try {
@@ -156,28 +203,6 @@ class LocalAudioPlayer(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w(TAG, "seekTo() error: ${e.message}")
-        }
-    }
-
-    fun setVolume(volume: Float) {
-        try {
-            val clamped = volume.coerceIn(0f, 1f)
-            mediaPlayer?.setVolume(clamped, clamped)
-        } catch (e: Exception) {
-            Log.w(TAG, "setVolume error: ${e.message}")
-        }
-    }
-
-    fun adjustPlaybackRate(speed: Float) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isPrepared && mediaPlayer?.isPlaying == true) {
-                val clampedSpeed = speed.coerceIn(0.85f, 1.15f)
-                val params = mediaPlayer?.playbackParams ?: PlaybackParams()
-                params.speed = clampedSpeed
-                mediaPlayer?.playbackParams = params
-            }
-        } catch (e: Exception) {
-            // Speed adjustment might not be supported on all streams
         }
     }
 

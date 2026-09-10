@@ -7,6 +7,8 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioSyncEngine
+import com.example.audio.LiveMicBroadcaster
+import com.example.audio.LiveMicReceiver
 import com.example.audio.SynthesizedMusicLibrary
 import com.example.data.AppDatabase
 import com.example.data.TrackEntity
@@ -15,10 +17,9 @@ import com.example.model.HostBeacon
 import com.example.model.SyncPlaybackState
 import com.example.model.Track
 import com.example.network.AudioHttpServer
+import com.example.network.NearbyDiscoveryManager
 import com.example.network.NetworkUtils
 import com.example.network.SyncClient
-import com.example.network.UdpBeaconBroadcaster
-import com.example.network.UdpBeaconListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -63,11 +64,17 @@ data class UiState(
     val durationMs: Long = SynthesizedMusicLibrary.builtInTracks.first().durationMs,
     val masterVolume: Float = 0.9f,
 
+    // Live Microphone (Voice broadcast from Host to Speakers)
+    val isLiveMicBroadcasting: Boolean = false,
+    val isLiveMicReceiving: Boolean = false,
+    val liveMicLevel: Float = 0f,
+
     // Connected speakers (on Host)
     val connectedSpeakers: List<DeviceSpeaker> = emptyList(),
 
     // Discovered hosts (on Speaker)
     val discoveredHosts: List<HostBeacon> = emptyList(),
+    val wifiDirectPeersCount: Int = 0,
     val speakerStatus: SpeakerConnectionStatus = SpeakerConnectionStatus.DISCONNECTED,
     val connectedHost: HostBeacon? = null,
     val speakerVolume: Float = 1.0f,
@@ -91,17 +98,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private val syncEngine = AudioSyncEngine(application, viewModelScope)
+    private val nearbyDiscoveryManager = NearbyDiscoveryManager(application, viewModelScope)
+    private val liveMicBroadcaster = LiveMicBroadcaster(application, viewModelScope) {
+        _uiState.value.connectedSpeakers.map { it.ip }
+    }
+    private val liveMicReceiver = LiveMicReceiver(
+        context = application,
+        scope = viewModelScope,
+        getVolume = { _uiState.value.speakerVolume },
+        onLiveMicStatusChanged = { isActive ->
+            _uiState.update { it.copy(isLiveMicReceiving = isActive) }
+            if (isActive) {
+                syncEngine.localPlayer.duckForLiveMic()
+            } else {
+                syncEngine.localPlayer.restoreAfterLiveMic()
+            }
+        }
+    )
 
     // Host network services
     private var httpServer: AudioHttpServer? = null
-    private var beaconBroadcaster: UdpBeaconBroadcaster? = null
-
-    // Speaker network services
-    private var beaconListener: UdpBeaconListener? = null
     private var activeSyncClient: SyncClient? = null
 
     private var positionTickerJob: Job? = null
-    private var speakerPollJob: Job? = null
 
     init {
         val ip = NetworkUtils.getLocalIpAddress()
@@ -145,6 +164,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val cur = if (tracks.any { it.id == state.currentTrack.id }) state.currentTrack else tracks.firstOrNull() ?: state.currentTrack
                     state.copy(playlist = tracks, currentTrack = cur)
                 }
+            }
+        }
+
+        // Collect discovered hosts from NSD & Wi-Fi Direct
+        viewModelScope.launch {
+            nearbyDiscoveryManager.discoveredHosts.collect { hosts ->
+                _uiState.update { it.copy(discoveredHosts = hosts) }
+            }
+        }
+
+        // Collect Wi-Fi Direct peers
+        viewModelScope.launch {
+            nearbyDiscoveryManager.wifiDirectPeers.collect { peers ->
+                _uiState.update { it.copy(wifiDirectPeersCount = peers.size) }
+            }
+        }
+
+        // Collect live mic status & RMS level
+        viewModelScope.launch {
+            liveMicBroadcaster.isBroadcasting.collect { isBroadcasting ->
+                _uiState.update { it.copy(isLiveMicBroadcasting = isBroadcasting) }
+            }
+        }
+        viewModelScope.launch {
+            liveMicBroadcaster.micLevel.collect { level ->
+                _uiState.update { it.copy(liveMicLevel = level) }
+            }
+        }
+
+        // Single unified sync state update from AudioSyncEngine
+        syncEngine.onStateUpdated = { state ->
+            _uiState.update { current ->
+                current.copy(
+                    isPlaying = state.isPlaying,
+                    currentPositionMs = state.positionMs,
+                    durationMs = state.durationMs,
+                    isLiveMicReceiving = state.isLiveMicActive || liveMicReceiver.isReceiving.value,
+                    currentTrack = current.currentTrack.copy(
+                        id = state.trackId,
+                        title = state.trackTitle,
+                        artist = state.artist
+                    )
+                )
             }
         }
 
@@ -200,7 +262,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     durationMs = _uiState.value.durationMs,
                     hostTimestamp = System.currentTimeMillis(),
                     scheduledStartHostTime = 0L,
-                    masterVolume = _uiState.value.masterVolume
+                    masterVolume = _uiState.value.masterVolume,
+                    isLiveMicActive = _uiState.value.isLiveMicBroadcasting
                 )
             },
             getCurrentTrack = { _uiState.value.currentTrack },
@@ -217,18 +280,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         httpServer?.start()
 
-        beaconBroadcaster = UdpBeaconBroadcaster(
+        // Publish service using NSD (mDNS) and UDP Beacon fallback
+        nearbyDiscoveryManager.startHostPublishing(
             hostName = hostName,
-            getPort = { 8990 },
+            port = 8990,
             getCurrentTrackTitle = { _uiState.value.currentTrack.title }
         )
-        beaconBroadcaster?.start()
 
         _uiState.update {
             it.copy(
                 localIp = ip,
                 isHostServerRunning = true,
-                message = "سرور میزبان روی $ip:8990 فعال شد"
+                message = "سرویس میزبان و کشف شبکه NSD فعال شد ($ip:8990)"
             )
         }
 
@@ -236,12 +299,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopHostMode() {
-        beaconBroadcaster?.stop()
-        beaconBroadcaster = null
+        liveMicBroadcaster.stopBroadcasting()
+        nearbyDiscoveryManager.stopHostPublishing()
         httpServer?.stop()
         httpServer = null
         syncEngine.localPlayer.pause()
-        _uiState.update { it.copy(isHostServerRunning = false, isPlaying = false) }
+        _uiState.update { it.copy(isHostServerRunning = false, isPlaying = false, isLiveMicBroadcasting = false) }
     }
 
     fun togglePlayPause() {
@@ -411,39 +474,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 speakerStatus = SpeakerConnectionStatus.DISCONNECTED,
                 discoveredHosts = emptyList(),
-                message = "در حال اسکن شبکه وای‌فای برای یافتن میزبان..."
+                message = "در حال کشف میزبان‌های مجاور با سرویس NSD و Wi-Fi..."
             )
         }
 
-        beaconListener = UdpBeaconListener(getApplication()) { beacon ->
-            viewModelScope.launch(Dispatchers.Main) {
-                _uiState.update { state ->
-                    val list = state.discoveredHosts.toMutableList()
-                    val idx = list.indexOfFirst { it.ip == beacon.ip && it.port == beacon.port }
-                    if (idx >= 0) {
-                        list[idx] = beacon
-                    } else {
-                        list.add(beacon)
-                    }
-                    state.copy(discoveredHosts = list)
-                }
-            }
-        }
-        beaconListener?.start()
+        // Start NSD & Wi-Fi Direct discovery
+        nearbyDiscoveryManager.startDiscovery()
+
+        // Start listening for real-time host microphone broadcasts
+        liveMicReceiver.startListening()
     }
 
     private fun stopSpeakerMode() {
-        beaconListener?.stop()
-        beaconListener = null
-        speakerPollJob?.cancel()
-        speakerPollJob = null
+        nearbyDiscoveryManager.stopDiscovery()
+        liveMicReceiver.stopListening()
         syncEngine.stopSpeakerSync()
         activeSyncClient = null
         _uiState.update {
             it.copy(
                 speakerStatus = SpeakerConnectionStatus.DISCONNECTED,
-                connectedHost = null
+                connectedHost = null,
+                isLiveMicReceiving = false
             )
+        }
+    }
+
+    fun refreshDiscovery() {
+        if (_uiState.value.mode == AppMode.SPEAKER) {
+            nearbyDiscoveryManager.stopDiscovery()
+            nearbyDiscoveryManager.startDiscovery()
+            _uiState.update { it.copy(message = "پویش مجدد شبکه برای کشف میزبان‌ها...") }
         }
     }
 
@@ -485,9 +545,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
 
-                // Start audio sync loop
+                // Start audio sync loop (notifies updates through syncEngine.onStateUpdated)
                 syncEngine.startSpeakerSync(client)
-                startSpeakerPolling(client)
             } else {
                 _uiState.update {
                     it.copy(
@@ -504,7 +563,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             hostName = "میزبان ($ip)",
             ip = ip.trim(),
             port = port,
-            currentTrackTitle = "در حال همگام‌سازی"
+            currentTrackTitle = "در حال همگام‌سازی",
+            discoveryType = "آدرس دستی"
         )
         connectToHost(beacon)
     }
@@ -539,31 +599,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(speakerVolume = clamped) }
     }
 
-    private fun startSpeakerPolling(client: SyncClient) {
-        speakerPollJob?.cancel()
-        speakerPollJob = viewModelScope.launch {
-            while (isActive) {
-                try {
-                    val state = client.fetchState()
-                    if (state != null) {
-                        _uiState.update {
-                            it.copy(
-                                isPlaying = state.isPlaying,
-                                currentPositionMs = state.positionMs,
-                                durationMs = state.durationMs,
-                                currentTrack = it.currentTrack.copy(
-                                    id = state.trackId,
-                                    title = state.trackTitle,
-                                    artist = state.artist
-                                )
-                            )
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Speaker poll error: ${e.message}")
-                }
-                delay(400)
+    // ================= LIVE MICROPHONE CONTROLS =================
+
+    fun startLiveMic(): Boolean {
+        val success = liveMicBroadcaster.startBroadcasting()
+        if (success) {
+            _uiState.update {
+                it.copy(
+                    isLiveMicBroadcasting = true,
+                    message = "پخش زنده میکروفن فعال شد! صدای شما روی تمام بلندگوها پخش می‌شود."
+                )
             }
+            if (_uiState.value.isPlaying) {
+                syncEngine.localPlayer.duckForLiveMic()
+            }
+        } else {
+            _uiState.update {
+                it.copy(message = "خطا در اتصال به میکروفن. لطفا مجوز ضبط صدا را بررسی کنید.")
+            }
+        }
+        return success
+    }
+
+    fun stopLiveMic() {
+        liveMicBroadcaster.stopBroadcasting()
+        _uiState.update {
+            it.copy(
+                isLiveMicBroadcasting = false,
+                liveMicLevel = 0f,
+                message = "پخش زنده میکروفن متوقف شد"
+            )
+        }
+        syncEngine.localPlayer.restoreAfterLiveMic()
+    }
+
+    fun toggleLiveMic(): Boolean {
+        return if (_uiState.value.isLiveMicBroadcasting) {
+            stopLiveMic()
+            false
+        } else {
+            startLiveMic()
+        }
+    }
+
+    fun refreshNearbyDiscovery() {
+        if (_uiState.value.mode == AppMode.SPEAKER) {
+            nearbyDiscoveryManager.startDiscovery()
+            nearbyDiscoveryManager.discoverWifiDirectPeers()
+            _uiState.update { it.copy(message = "در حال پویش مجدد سرویس‌های NSD و Wi-Fi...") }
         }
     }
 
@@ -626,6 +709,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         stopHostMode()
         stopSpeakerMode()
+        nearbyDiscoveryManager.release()
+        liveMicBroadcaster.stopBroadcasting()
+        liveMicReceiver.stopListening()
         syncEngine.release()
     }
 }

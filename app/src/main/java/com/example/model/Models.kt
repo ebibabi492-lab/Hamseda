@@ -32,7 +32,8 @@ data class SyncPlaybackState(
     val durationMs: Long = 0L,
     val hostTimestamp: Long = 0L,
     val scheduledStartHostTime: Long = 0L,
-    val masterVolume: Float = 1.0f
+    val masterVolume: Float = 1.0f,
+    val isLiveMicActive: Boolean = false
 )
 
 data class HostBeacon(
@@ -40,5 +41,6 @@ data class HostBeacon(
     val ip: String,
     val port: Int,
     val currentTrackTitle: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val discoveryType: String = "وای‌فای محلی"
 )

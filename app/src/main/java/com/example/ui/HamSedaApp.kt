@@ -134,7 +134,8 @@ fun HamSedaApp(
                                     onSeek = { pos -> viewModel.seekTo(pos) },
                                     onMasterVolumeChange = { vol -> viewModel.setMasterVolume(vol) },
                                     onSpeakerVolumeChange = { id, vol -> viewModel.setSpeakerVolume(id, vol) },
-                                    onToggleSpeakerMute = { id -> viewModel.toggleSpeakerMute(id) }
+                                    onToggleSpeakerMute = { id -> viewModel.toggleSpeakerMute(id) },
+                                    onToggleLiveMic = { viewModel.toggleLiveMic() }
                                 )
                             } else {
                                 SpeakerScreen(
@@ -143,7 +144,8 @@ fun HamSedaApp(
                                     onManualConnect = { ip -> viewModel.connectToHostManual(ip) },
                                     onDisconnect = { viewModel.disconnectSpeaker() },
                                     onManualOffsetChange = { offset -> viewModel.setManualLatencyOffset(offset) },
-                                    onSpeakerVolumeChange = { vol -> viewModel.setLocalSpeakerVolume(vol) }
+                                    onSpeakerVolumeChange = { vol -> viewModel.setLocalSpeakerVolume(vol) },
+                                    onRefreshDiscovery = { viewModel.refreshDiscovery() }
                                 )
                             }
                         }
