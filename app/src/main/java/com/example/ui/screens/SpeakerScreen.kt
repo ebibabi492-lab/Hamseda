@@ -68,6 +68,7 @@ import com.example.ui.SpeakerConnectionStatus
 import com.example.ui.UiState
 import com.example.ui.components.AudioVisualizer
 import com.example.ui.components.BatterySaverCard
+import com.example.ui.components.SharedPlaylistCard
 import com.example.ui.components.SyncOffsetControl
 
 @Composable
@@ -81,6 +82,9 @@ fun SpeakerScreen(
     onRefreshDiscovery: () -> Unit = {},
     onToggleBatterySaver: () -> Unit = {},
     onOpenManual: () -> Unit = {},
+    onTrackSelect: (Track) -> Unit = {},
+    onAddTrack: (Track) -> Unit = {},
+    onDeleteTrack: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showManualDialog by remember { mutableStateOf(false) }
@@ -479,6 +483,18 @@ fun SpeakerScreen(
                     offsetMs = state.manualLatencyOffsetMs,
                     syncDriftMs = state.syncDriftMs,
                     onOffsetChange = onManualOffsetChange
+                )
+            }
+
+            // Shared Playlist Component (Synced across Host & Speakers)
+            item {
+                SharedPlaylistCard(
+                    playlist = state.playlist,
+                    currentTrack = state.currentTrack,
+                    connectedSpeakersCount = state.connectedSpeakers.size,
+                    onTrackSelect = onTrackSelect,
+                    onAddTrack = onAddTrack,
+                    onDeleteTrack = onDeleteTrack
                 )
             }
 

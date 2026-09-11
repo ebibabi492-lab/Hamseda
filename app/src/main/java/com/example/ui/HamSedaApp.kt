@@ -159,7 +159,10 @@ fun HamSedaApp(
                                     onUnblockDevice = { id -> viewModel.unblockDevice(id) },
                                     onDisconnectSpeaker = { id -> viewModel.disconnectSpeaker(id) },
                                     onToggleApprovalRequired = { req -> viewModel.setHostApprovalRequired(req) },
-                                    onOpenManual = { showManualDialog = true }
+                                    onOpenManual = { showManualDialog = true },
+                                    onTrackSelect = { track -> viewModel.playTrack(track) },
+                                    onAddTrack = { track -> viewModel.addTrackToPlaylist(track) },
+                                    onDeleteTrack = { id -> viewModel.removeTrackFromPlaylist(id) }
                                 )
                             } else {
                                 SpeakerScreen(
@@ -171,7 +174,10 @@ fun HamSedaApp(
                                     onSpeakerVolumeChange = { vol -> viewModel.setLocalSpeakerVolume(vol) },
                                     onRefreshDiscovery = { viewModel.refreshDiscovery() },
                                     onToggleBatterySaver = { viewModel.toggleBatterySaver() },
-                                    onOpenManual = { showManualDialog = true }
+                                    onOpenManual = { showManualDialog = true },
+                                    onTrackSelect = { track -> viewModel.playTrack(track) },
+                                    onAddTrack = { track -> viewModel.addTrackToPlaylist(track) },
+                                    onDeleteTrack = { id -> viewModel.removeTrackFromPlaylist(id) }
                                 )
                             }
                         }

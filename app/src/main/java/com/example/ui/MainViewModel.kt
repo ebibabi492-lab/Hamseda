@@ -30,6 +30,12 @@ import com.example.network.NearbyDiscoveryManager
 import com.example.network.NetworkUtils
 import com.example.network.SpeakerHeartbeatResult
 import com.example.network.SyncClient
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -562,6 +568,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val track = _uiState.value.playlist.find { it.id == trackId }
                     if (track != null) playTrack(track)
                 }
+                "speaker_volume" -> {
+                    val parts = value?.split(":")
+                    if (parts != null && parts.size >= 2) {
+                        val spkId = parts[0]
+                        val vol = parts[1].toFloatOrNull() ?: 1.0f
+                        setSpeakerVolume(spkId, vol)
+                    }
+                }
+                "speaker_mute" -> {
+                    if (value != null) {
+                        toggleSpeakerMute(value)
+                    }
+                }
             }
         }
     }
@@ -580,20 +599,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSpeakerVolume(speakerId: String, volume: Float) {
+        val clamped = volume.coerceIn(0f, 1f)
         _uiState.update { state ->
             val updated = state.connectedSpeakers.map {
-                if (it.id == speakerId) it.copy(volume = volume) else it
+                if (it.id == speakerId) it.copy(volume = clamped) else it
             }
             state.copy(connectedSpeakers = updated)
+        }
+
+        // 1. If in Host mode, send volume command directly to the target speaker's HTTP endpoint
+        if (_uiState.value.mode == AppMode.HOST) {
+            val targetSpeaker = _uiState.value.connectedSpeakers.find { it.id == speakerId }
+            if (targetSpeaker != null) {
+                // Update registered speaker model in host HTTP server
+                httpServer?.registeredSpeakers?.get(speakerId)?.let {
+                    httpServer?.registeredSpeakers?.put(speakerId, it.copy(volume = clamped))
+                }
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        val client = OkHttpClient.Builder()
+                            .connectTimeout(1, TimeUnit.SECONDS)
+                            .readTimeout(1, TimeUnit.SECONDS)
+                            .build()
+                        val json = JSONObject().apply {
+                            put("action", "set_volume")
+                            put("value", clamped.toString())
+                        }
+                        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                        val req = Request.Builder()
+                            .url("http://${targetSpeaker.ip}:${targetSpeaker.port}/api/control")
+                            .post(body)
+                            .build()
+                        client.newCall(req).execute().close()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to send volume to speaker $speakerId: ${e.message}")
+                    }
+                }
+            }
+        } else {
+            // 2. If called from remote control on speaker/client side
+            viewModelScope.launch(Dispatchers.IO) {
+                activeSyncClient?.sendControlAction("speaker_volume", "${speakerId}:${clamped}")
+            }
         }
     }
 
     fun toggleSpeakerMute(speakerId: String) {
+        var isNowMuted = false
         _uiState.update { state ->
             val updated = state.connectedSpeakers.map {
-                if (it.id == speakerId) it.copy(isMuted = !it.isMuted) else it
+                if (it.id == speakerId) {
+                    isNowMuted = !it.isMuted
+                    it.copy(isMuted = isNowMuted)
+                } else it
             }
             state.copy(connectedSpeakers = updated)
+        }
+
+        // If in Host mode, propagate mute to speaker
+        if (_uiState.value.mode == AppMode.HOST) {
+            val targetSpeaker = _uiState.value.connectedSpeakers.find { it.id == speakerId }
+            if (targetSpeaker != null) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        val effectiveVol = if (isNowMuted) 0f else targetSpeaker.volume
+                        val client = OkHttpClient.Builder()
+                            .connectTimeout(1, TimeUnit.SECONDS)
+                            .readTimeout(1, TimeUnit.SECONDS)
+                            .build()
+                        val json = JSONObject().apply {
+                            put("action", "set_volume")
+                            put("value", effectiveVol.toString())
+                        }
+                        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                        val req = Request.Builder()
+                            .url("http://${targetSpeaker.ip}:${targetSpeaker.port}/api/control")
+                            .post(body)
+                            .build()
+                        client.newCall(req).execute().close()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to send mute to speaker $speakerId: ${e.message}")
+                    }
+                }
+            }
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
+                activeSyncClient?.sendControlAction("speaker_mute", speakerId)
+            }
         }
     }
 

@@ -83,11 +83,13 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.model.ConnectionRequest
 import com.example.model.DeviceSpeaker
+import com.example.model.Track
 import com.example.ui.PersianFormatters
 import com.example.ui.UiState
 import com.example.ui.components.AudioVisualizer
 import com.example.ui.components.ConnectionStatusDashboard
 import com.example.ui.components.BatterySaverCard
+import com.example.ui.components.SharedPlaylistCard
 
 @Composable
 fun HostScreen(
@@ -109,6 +111,9 @@ fun HostScreen(
     onDisconnectSpeaker: (String) -> Unit = {},
     onToggleApprovalRequired: (Boolean) -> Unit = {},
     onOpenManual: () -> Unit = {},
+    onTrackSelect: (Track) -> Unit = {},
+    onAddTrack: (Track) -> Unit = {},
+    onDeleteTrack: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -418,6 +423,18 @@ fun HostScreen(
             ConnectionStatusDashboard(
                 speakers = state.connectedSpeakers,
                 title = "داشبورد پایش وضعیت اتصال و همگام‌سازی بلندگوها"
+            )
+        }
+
+        // Shared Playlist Component (syncing track additions/deletions across connected clients)
+        item {
+            SharedPlaylistCard(
+                playlist = state.playlist,
+                currentTrack = state.currentTrack,
+                connectedSpeakersCount = state.connectedSpeakers.size,
+                onTrackSelect = onTrackSelect,
+                onAddTrack = onAddTrack,
+                onDeleteTrack = onDeleteTrack
             )
         }
 
