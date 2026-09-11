@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,11 +20,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.VolumeUp
@@ -75,6 +80,7 @@ fun SpeakerScreen(
     onSpeakerVolumeChange: (Float) -> Unit,
     onRefreshDiscovery: () -> Unit = {},
     onToggleBatterySaver: () -> Unit = {},
+    onOpenManual: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showManualDialog by remember { mutableStateOf(false) }
@@ -124,13 +130,180 @@ fun SpeakerScreen(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (state.speakerStatus == SpeakerConnectionStatus.CONNECTED)
-                                "متصل به ${state.connectedHost?.hostName ?: "میزبان"}"
-                            else
-                                "در حال گوش دادن به فرکانس شبکه محلی با NSD...",
+                            text = when (state.speakerStatus) {
+                                SpeakerConnectionStatus.CONNECTED -> "متصل به ${state.connectedHost?.hostName ?: "میزبان"}"
+                                SpeakerConnectionStatus.WAITING_APPROVAL -> "در انتظار تایید اتصال توسط میزبان..."
+                                SpeakerConnectionStatus.CONNECTING -> "در حال اتصال به میزبان..."
+                                SpeakerConnectionStatus.REJECTED -> "اتصال رد شد یا مسدود است"
+                                else -> "در حال گوش دادن به فرکانس شبکه محلی با NSD..."
+                            },
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                }
+            }
+        }
+
+        // Waiting for Host Approval Banner
+        if (state.speakerStatus == SpeakerConnectionStatus.WAITING_APPROVAL) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("speaker_waiting_approval_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(36.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            strokeWidth = 3.dp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "در انتظار تایید میزبان...",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "درخواست اتصال برای «${state.connectedHost?.hostName ?: "میزبان"}» ارسال شد. به محض اینکه میزبان در گوشی خود تایید کند، پخش صدا بی‌درنگ آغاز خواهد شد.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 18.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedButton(
+                            onClick = onDisconnect,
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "انصراف و لغو اتصال")
+                        }
+                    }
+                }
+            }
+        }
+
+        // Connection Rejected Banner
+        if (state.speakerStatus == SpeakerConnectionStatus.REJECTED) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("speaker_rejected_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "درخواست اتصال تایید نشد",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "میزبان درخواست اتصال این دستگاه را رد کرده است یا این دستگاه در لیست مسدود شده‌ها قرار دارد.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = onRefreshDiscovery,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "پویش مجدد شبکه")
+                        }
+                    }
+                }
+            }
+        }
+
+        // In-App User Manual Quick Access Banner
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { onOpenManual() }
+                    .testTag("speaker_manual_card"),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MenuBook,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "راهنمای هم‌صدا و تنظیم تاخیر",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "نحوه اتصال به بلندگو، تنظیم هندزفری و جبران تاخیر در شبستان",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = onOpenManual,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(text = "راهنما", fontSize = 11.sp)
                     }
                 }
             }

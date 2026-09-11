@@ -13,9 +13,17 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+enum class SpeakerHeartbeatResult {
+    APPROVED,
+    PENDING,
+    REJECTED,
+    FAILED
+}
+
 class SyncClient(
     private val hostIp: String,
-    private val hostPort: Int = 8990
+    private val hostPort: Int = 8990,
+    private val deviceId: String = ""
 ) {
     private val TAG = "SyncClient"
     private val client = OkHttpClient.Builder()
@@ -46,6 +54,7 @@ class SyncClient(
                 val t0 = System.currentTimeMillis()
                 val request = Request.Builder()
                     .url("$baseUrl/api/time?t0=$t0")
+                    .header("x-device-id", deviceId)
                     .build()
 
                 client.newCall(request).execute().use { response ->
@@ -89,7 +98,8 @@ class SyncClient(
     suspend fun fetchState(): SyncPlaybackState? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
-                .url("$baseUrl/api/state")
+                .url("$baseUrl/api/state?deviceId=$deviceId")
+                .header("x-device-id", deviceId)
                 .build()
 
             client.newCall(request).execute().use { response ->
@@ -106,7 +116,8 @@ class SyncClient(
                         hostTimestamp = json.optLong("hostTimestamp"),
                         scheduledStartHostTime = json.optLong("scheduledStartHostTime"),
                         masterVolume = json.optDouble("masterVolume", 1.0).toFloat(),
-                        isLiveMicActive = json.optBoolean("isLiveMicActive", false)
+                        isLiveMicActive = json.optBoolean("isLiveMicActive", false),
+                        playlistVersion = json.optLong("playlistVersion", 0L)
                     )
                 }
             }
@@ -116,24 +127,46 @@ class SyncClient(
         null
     }
 
-    suspend fun sendHeartbeat(speaker: DeviceSpeaker): Boolean = withContext(Dispatchers.IO) {
+    suspend fun registerOrHeartbeat(speaker: DeviceSpeaker): SpeakerHeartbeatResult = withContext(Dispatchers.IO) {
         try {
             val json = JSONObject().apply {
-                put("id", speaker.id)
+                put("id", speaker.id.ifEmpty { deviceId })
                 put("name", speaker.name)
                 put("volume", speaker.volume.toDouble())
                 put("latency", speaker.latencyOffsetMs)
                 put("rtt", roundTripDelayMs)
             }
             val request = Request.Builder()
-                .url("$baseUrl/api/heartbeat")
+                .url("$baseUrl/api/register_speaker")
+                .header("x-device-id", speaker.id.ifEmpty { deviceId })
                 .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 
-            client.newCall(request).execute().use { it.isSuccessful }
+            client.newCall(request).execute().use { response ->
+                if (response.code == 403) {
+                    return@withContext SpeakerHeartbeatResult.REJECTED
+                }
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: ""
+                    val obj = JSONObject(body)
+                    val status = obj.optString("status")
+                    val approved = obj.optBoolean("approved", true)
+                    return@withContext when {
+                        status == "blocked" || status == "rejected" -> SpeakerHeartbeatResult.REJECTED
+                        status == "pending" || !approved -> SpeakerHeartbeatResult.PENDING
+                        else -> SpeakerHeartbeatResult.APPROVED
+                    }
+                }
+                return@withContext SpeakerHeartbeatResult.FAILED
+            }
         } catch (e: Exception) {
-            false
+            SpeakerHeartbeatResult.FAILED
         }
+    }
+
+    suspend fun sendHeartbeat(speaker: DeviceSpeaker): Boolean = withContext(Dispatchers.IO) {
+        val result = registerOrHeartbeat(speaker)
+        result == SpeakerHeartbeatResult.APPROVED
     }
 
     suspend fun sendControlAction(action: String, value: String? = null): Boolean = withContext(Dispatchers.IO) {
@@ -201,6 +234,41 @@ class SyncClient(
             }
             val request = Request.Builder()
                 .url("$baseUrl/api/playlist/add")
+                .header("x-device-id", deviceId)
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun removeTrackFromPlaylist(trackId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("id", trackId)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/playlist/remove")
+                .header("x-device-id", deviceId)
+                .post(json.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun upvoteTrack(trackId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val json = JSONObject().apply {
+                put("id", trackId)
+            }
+            val request = Request.Builder()
+                .url("$baseUrl/api/playlist/upvote")
+                .header("x-device-id", deviceId)
                 .post(json.toString().toRequestBody(jsonMediaType))
                 .build()
 

@@ -22,6 +22,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -35,7 +37,7 @@ object LiveMicConstants {
     const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
     const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
     const val AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT
-    const val CHUNK_SIZE_BYTES = 640 // 20ms per packet (320 16-bit samples)
+    const val CHUNK_SIZE_BYTES = 960 // 30ms per packet (480 16-bit samples) - smoother transmission
     const val UDP_MIC_PORT = 8992
     const val MAGIC_HEADER = 0x48534D43 // "HSMC"
 }
@@ -190,9 +192,13 @@ class LiveMicReceiver(
     val isReceiving: StateFlow<Boolean> = _isReceiving.asStateFlow()
 
     private var receiveJob: Job? = null
+    private var playbackJob: Job? = null
     private var udpSocket: DatagramSocket? = null
     private var audioTrack: AudioTrack? = null
     private var lastPacketTime = 0L
+
+    // Jitter buffer holding PCM chunks to smooth out network bursts & packet delays
+    private val jitterBuffer = LinkedBlockingQueue<ByteArray>(20)
 
     fun startListening() {
         if (receiveJob != null) return
@@ -204,7 +210,8 @@ class LiveMicReceiver(
             LiveMicConstants.CHANNEL_OUT,
             LiveMicConstants.AUDIO_ENCODING
         )
-        val bufferSize = (minBufferSize * 3).coerceAtLeast(LiveMicConstants.CHUNK_SIZE_BYTES * 6)
+        // Allocate generous AudioTrack buffer (approx 300-400ms) to completely eliminate underrun clicks
+        val bufferSize = (minBufferSize * 4).coerceAtLeast(LiveMicConstants.CHUNK_SIZE_BYTES * 10)
 
         try {
             audioTrack = AudioTrack.Builder()
@@ -230,11 +237,45 @@ class LiveMicReceiver(
             udpSocket = DatagramSocket(LiveMicConstants.UDP_MIC_PORT).apply {
                 broadcast = true
                 reuseAddress = true
-                receiveBufferSize = 64 * 1024
+                receiveBufferSize = 128 * 1024
             }
 
+            jitterBuffer.clear()
+
+            // 1. Playback Job: reads from jitter buffer continuously and feeds AudioTrack smoothly
+            playbackJob = scope.launch(Dispatchers.IO) {
+                var preBuffered = false
+                while (isActive) {
+                    try {
+                        // Pre-buffer 2 packets (~60ms) before beginning initial playback after silence
+                        if (!preBuffered) {
+                            while (isActive && jitterBuffer.size < 2) {
+                                val chunk = jitterBuffer.poll(80, TimeUnit.MILLISECONDS)
+                                if (chunk != null) {
+                                    jitterBuffer.offer(chunk)
+                                }
+                            }
+                            preBuffered = true
+                        }
+
+                        val chunk = jitterBuffer.poll(100, TimeUnit.MILLISECONDS)
+                        if (chunk != null) {
+                            audioTrack?.write(chunk, 0, chunk.size)
+                        } else {
+                            // If buffer emptied completely, reset pre-buffering flag for next speech burst
+                            preBuffered = false
+                        }
+                    } catch (e: Exception) {
+                        if (isActive) {
+                            Log.w(TAG, "AudioTrack playback warning: ${e.message}")
+                        }
+                    }
+                }
+            }
+
+            // 2. Receive Job: handles network packets without blocking on AudioTrack
             receiveJob = scope.launch(Dispatchers.IO) {
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(2048)
                 val packet = DatagramPacket(buffer, buffer.size)
 
                 // Launch silence watchdog coroutine
@@ -277,7 +318,11 @@ class LiveMicReceiver(
                                     pcmBytes[i + 1] = ((scaled.toInt() shr 8) and 0xFF).toByte()
                                 }
 
-                                audioTrack?.write(pcmBytes, 0, pcmLen)
+                                // Put processed chunk into jitter queue (drop oldest if full)
+                                if (!jitterBuffer.offer(pcmBytes)) {
+                                    jitterBuffer.poll() // drop oldest to maintain low latency
+                                    jitterBuffer.offer(pcmBytes)
+                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -296,6 +341,9 @@ class LiveMicReceiver(
     fun stopListening() {
         receiveJob?.cancel()
         receiveJob = null
+        playbackJob?.cancel()
+        playbackJob = null
+        jitterBuffer.clear()
         _isReceiving.value = false
         onLiveMicStatusChanged(false)
 

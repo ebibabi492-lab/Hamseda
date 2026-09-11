@@ -11,6 +11,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,28 +30,43 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -65,10 +81,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.model.ConnectionRequest
 import com.example.model.DeviceSpeaker
 import com.example.ui.PersianFormatters
 import com.example.ui.UiState
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.ConnectionStatusDashboard
 import com.example.ui.components.BatterySaverCard
 
 @Composable
@@ -83,6 +101,14 @@ fun HostScreen(
     onToggleSpeakerMute: (String) -> Unit,
     onToggleLiveMic: () -> Unit = {},
     onToggleBatterySaver: () -> Unit = {},
+    onApproveRequest: (String) -> Unit = {},
+    onRejectRequest: (String) -> Unit = {},
+    onApproveAllRequests: () -> Unit = {},
+    onBlockDevice: (String) -> Unit = {},
+    onUnblockDevice: (String) -> Unit = {},
+    onDisconnectSpeaker: (String) -> Unit = {},
+    onToggleApprovalRequired: (Boolean) -> Unit = {},
+    onOpenManual: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -99,6 +125,76 @@ fun HostScreen(
                 port = state.hostPort,
                 speakerCount = state.connectedSpeakers.size
             )
+        }
+
+        // Pending Connection Requests Card
+        if (state.pendingConnectionRequests.isNotEmpty()) {
+            item {
+                PendingRequestsCard(
+                    requests = state.pendingConnectionRequests,
+                    onApprove = onApproveRequest,
+                    onReject = onRejectRequest,
+                    onApproveAll = onApproveAllRequests,
+                    onBlock = onBlockDevice
+                )
+            }
+        }
+
+        // In-App User Manual Quick Access Banner
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { onOpenManual() }
+                    .testTag("host_manual_card"),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MenuBook,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "راهنمای کامل نرم‌افزار هم‌صدا",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "آموزش گام‌به‌گام راه‌اندازی، تایید اتصالات و پخش در مساجد",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = onOpenManual,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(text = "مطالعه", fontSize = 11.sp)
+                    }
+                }
+            }
         }
 
         // Current Music Player Card
@@ -317,6 +413,14 @@ fun HostScreen(
             )
         }
 
+        // Connection Status Dashboard (Showing devices, signal strength, sync offsets)
+        item {
+            ConnectionStatusDashboard(
+                speakers = state.connectedSpeakers,
+                title = "داشبورد پایش وضعیت اتصال و همگام‌سازی بلندگوها"
+            )
+        }
+
         // Connected Speakers Title & Counter
         item {
             Row(
@@ -325,7 +429,7 @@ fun HostScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "بلندگوهای متصل (${PersianFormatters.toPersianDigits(state.connectedSpeakers.size.toString())})",
+                    text = "مدیریت بلندگوهای متصل (${PersianFormatters.toPersianDigits(state.connectedSpeakers.size.toString())})",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -336,6 +440,14 @@ fun HostScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+        }
+
+        // Host Access Control Switch Card
+        item {
+            HostAccessControlCard(
+                isApprovalRequired = state.isHostApprovalRequired,
+                onToggleApprovalRequired = onToggleApprovalRequired
+            )
         }
 
         if (state.connectedSpeakers.isEmpty()) {
@@ -382,7 +494,19 @@ fun HostScreen(
                 SpeakerDeviceItem(
                     speaker = speaker,
                     onVolumeChange = { vol -> onSpeakerVolumeChange(speaker.id, vol) },
-                    onToggleMute = { onToggleSpeakerMute(speaker.id) }
+                    onToggleMute = { onToggleSpeakerMute(speaker.id) },
+                    onDisconnect = { onDisconnectSpeaker(speaker.id) },
+                    onBlock = { onBlockDevice(speaker.id) }
+                )
+            }
+        }
+
+        // Blocked Devices Section
+        if (state.blockedDeviceIds.isNotEmpty()) {
+            item {
+                BlockedDevicesCard(
+                    blockedIds = state.blockedDeviceIds.toList(),
+                    onUnblock = onUnblockDevice
                 )
             }
         }
@@ -456,7 +580,9 @@ private fun HostNetworkBanner(
 private fun SpeakerDeviceItem(
     speaker: DeviceSpeaker,
     onVolumeChange: (Float) -> Unit,
-    onToggleMute: () -> Unit
+    onToggleMute: () -> Unit,
+    onDisconnect: () -> Unit,
+    onBlock: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -490,20 +616,52 @@ private fun SpeakerDeviceItem(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        Text(
-                            text = "آی‌پی: ${speaker.ip}",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "آی‌پی: ${speaker.ip}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            val rtt = speaker.rttMs
+                            val (sigText, sigColor) = when {
+                                rtt <= 0L || rtt < 25L -> "سیگنال عالی" to Color(0xFF10B981)
+                                rtt < 65L -> "سیگنال خوب" to Color(0xFF3B82F6)
+                                rtt < 130L -> "سیگنال متوسط" to Color(0xFFF59E0B)
+                                else -> "سیگنال ضعیف" to Color(0xFFEF4444)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "• $sigText",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = sigColor
+                            )
+                        }
                     }
                 }
 
-                IconButton(onClick = onToggleMute) {
-                    Icon(
-                        imageVector = if (speaker.isMuted) Icons.Default.VolumeMute else Icons.Default.VolumeUp,
-                        contentDescription = "بی‌صدا کردن",
-                        tint = if (speaker.isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onToggleMute) {
+                        Icon(
+                            imageVector = if (speaker.isMuted) Icons.Default.VolumeMute else Icons.Default.VolumeUp,
+                            contentDescription = "بی‌صدا کردن",
+                            tint = if (speaker.isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(onClick = onDisconnect) {
+                        Icon(
+                            imageVector = Icons.Default.LinkOff,
+                            contentDescription = "قطع اتصال",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                        )
+                    }
+                    IconButton(onClick = onBlock) {
+                        Icon(
+                            imageVector = Icons.Default.Block,
+                            contentDescription = "مسدود کردن دسترسی",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                        )
+                    }
                 }
             }
 
@@ -530,6 +688,325 @@ private fun SpeakerDeviceItem(
                         activeTrackColor = MaterialTheme.colorScheme.secondary
                     )
                 )
+            }
+
+            // Sync offset status
+            val offset = speaker.latencyOffsetMs
+            val offsetText = when {
+                offset > 0 -> "+${PersianFormatters.toPersianDigits(offset.toString())} ms"
+                offset < 0 -> "${PersianFormatters.toPersianDigits(offset.toString())} ms"
+                else -> "۰ ms (دقیق)"
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "آفست تأخیر: $offsetText",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = "RTT پینگ: ${PersianFormatters.toPersianDigits(if (speaker.rttMs > 0) speaker.rttMs.toString() else "۱۰")} ms",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PendingRequestsCard(
+    requests: List<ConnectionRequest>,
+    onApprove: (String) -> Unit,
+    onReject: (String) -> Unit,
+    onApproveAll: () -> Unit,
+    onBlock: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("pending_requests_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "درخواست‌های اتصال در انتظار (${PersianFormatters.toPersianDigits(requests.size.toString())})",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "دستگاه‌های متقاضی پخش صدا با تایید شما متصل می‌شوند",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (requests.size > 1) {
+                    FilledTonalButton(
+                        onClick = onApproveAll,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(text = "تایید همه", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                requests.forEach { request ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PhoneAndroid,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = request.deviceName,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "آی‌پی: ${request.ip}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Approve Button
+                                Button(
+                                    onClick = { onApprove(request.id) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF10B981)
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(text = "تایید", fontSize = 11.sp)
+                                }
+
+                                // Reject Button
+                                OutlinedButton(
+                                    onClick = { onReject(request.id) },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(text = "رد", fontSize = 11.sp)
+                                }
+
+                                // Block Button
+                                IconButton(
+                                    onClick = { onBlock(request.id) },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Block,
+                                        contentDescription = "مسدودسازی",
+                                        tint = MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HostAccessControlCard(
+    isApprovalRequired: Boolean,
+    onToggleApprovalRequired: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "تایید دستی اتصالات توسط میزبان",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = if (isApprovalRequired)
+                        "فعال: هر دستگاه قبل از اتصال باید توسط شما تایید گردد"
+                    else
+                        "غیرفعال: همه دستگاه‌ها در شبکه محلی مستقیماً وصل می‌شوند",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = isApprovalRequired,
+                onCheckedChange = onToggleApprovalRequired,
+                modifier = Modifier.testTag("toggle_approval_switch")
+            )
+        }
+    }
+}
+
+@Composable
+fun BlockedDevicesCard(
+    blockedIds: List<String>,
+    onUnblock: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Block,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "دستگاه‌های مسدود شده (${PersianFormatters.toPersianDigits(blockedIds.size.toString())})",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                blockedIds.forEach { deviceId ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = deviceId,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            TextButton(
+                                onClick = { onUnblock(deviceId) },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(text = "رفع مسدودیت", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

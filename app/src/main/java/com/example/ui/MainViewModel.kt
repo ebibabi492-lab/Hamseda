@@ -17,14 +17,18 @@ import com.example.audio.LiveMicBroadcaster
 import com.example.audio.LiveMicReceiver
 import com.example.audio.SynthesizedMusicLibrary
 import com.example.data.AppDatabase
+import com.example.data.StorageAudioScanner
 import com.example.data.TrackEntity
+import com.example.model.ConnectionRequest
 import com.example.model.DeviceSpeaker
 import com.example.model.HostBeacon
+import com.example.model.StorageAudioFile
 import com.example.model.SyncPlaybackState
 import com.example.model.Track
 import com.example.network.AudioHttpServer
 import com.example.network.NearbyDiscoveryManager
 import com.example.network.NetworkUtils
+import com.example.network.SpeakerHeartbeatResult
 import com.example.network.SyncClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,6 +55,8 @@ enum class NavigationTab {
 enum class SpeakerConnectionStatus {
     DISCONNECTED,
     CONNECTING,
+    WAITING_APPROVAL,
+    REJECTED,
     SYNCING_CLOCK,
     CONNECTED,
     ERROR
@@ -78,6 +84,12 @@ data class UiState(
     // Connected speakers (on Host)
     val connectedSpeakers: List<DeviceSpeaker> = emptyList(),
 
+    // Device Access Control & Host Approval
+    val isHostApprovalRequired: Boolean = true,
+    val pendingConnectionRequests: List<ConnectionRequest> = emptyList(),
+    val approvedDeviceIds: Set<String> = emptySet(),
+    val blockedDeviceIds: Set<String> = emptySet(),
+
     // Discovered hosts (on Speaker)
     val discoveredHosts: List<HostBeacon> = emptyList(),
     val wifiDirectPeersCount: Int = 0,
@@ -98,6 +110,13 @@ data class UiState(
     val isBatteryCharging: Boolean = false,
     val userExplicitBatterySaverPreference: Boolean = false,
     val syncIntervalMs: Long = 400L,
+
+    // Internal Storage File Manager & Search
+    val storageAudioFiles: List<StorageAudioFile> = emptyList(),
+    val isStorageScanning: Boolean = false,
+    val storageSearchQuery: String = "",
+    val selectedStorageFolder: String = "همه",
+    val selectedStorageFileIds: Set<Long> = emptySet(),
 
     // Status / Toast message in Persian
     val message: String? = null
@@ -135,6 +154,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeSyncClient: SyncClient? = null
 
     private var positionTickerJob: Job? = null
+    private var speakerPlaylistSyncJob: Job? = null
+    private var playlistVersion: Long = 1L
+    private var lastSyncedPlaylistVersion: Long = -1L
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -180,9 +202,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         votes = e.votes
                     )
                 }
-                _uiState.update { state ->
-                    val cur = if (tracks.any { it.id == state.currentTrack.id }) state.currentTrack else tracks.firstOrNull() ?: state.currentTrack
-                    state.copy(playlist = tracks, currentTrack = cur)
+                playlistVersion++
+                if (_uiState.value.mode == AppMode.HOST) {
+                    _uiState.update { state ->
+                        val cur = if (tracks.any { it.id == state.currentTrack.id }) state.currentTrack else tracks.firstOrNull() ?: state.currentTrack
+                        state.copy(playlist = tracks, currentTrack = cur)
+                    }
                 }
             }
         }
@@ -228,6 +253,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 )
             }
+
+            if (_uiState.value.mode == AppMode.SPEAKER && state.playlistVersion > 0 && state.playlistVersion != lastSyncedPlaylistVersion) {
+                lastSyncedPlaylistVersion = state.playlistVersion
+                activeSyncClient?.let { client ->
+                    viewModelScope.launch(Dispatchers.IO) {
+                        refreshSpeakerPlaylist(client)
+                    }
+                }
+            }
         }
 
         // Start in Host mode by default
@@ -260,6 +294,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to register battery receiver: ${e.message}")
         }
+
+        // Initialize internal storage audio files scan
+        scanStorageAudio()
     }
 
     private fun updateBatteryStatus(intent: Intent?) {
@@ -355,7 +392,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     hostTimestamp = System.currentTimeMillis(),
                     scheduledStartHostTime = 0L,
                     masterVolume = _uiState.value.masterVolume,
-                    isLiveMicActive = _uiState.value.isLiveMicBroadcasting
+                    isLiveMicActive = _uiState.value.isLiveMicBroadcasting,
+                    playlistVersion = playlistVersion
                 )
             },
             getCurrentTrack = { _uiState.value.currentTrack },
@@ -366,8 +404,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             onAddTrackToPlaylist = { track ->
                 addTrackToPlaylist(track)
             },
+            onDeleteTrackFromPlaylist = { trackId ->
+                removeTrackFromPlaylist(trackId)
+            },
+            onUpvoteTrackInPlaylist = { trackId ->
+                upvoteTrack(trackId)
+            },
             onSpeakerHeartbeat = { speaker ->
                 updateSpeakerFromHeartbeat(speaker)
+            },
+            isApprovalRequired = { _uiState.value.isHostApprovalRequired },
+            isDeviceApproved = { deviceId, ip ->
+                !_uiState.value.isHostApprovalRequired ||
+                        _uiState.value.approvedDeviceIds.contains(deviceId) ||
+                        _uiState.value.approvedDeviceIds.contains(ip)
+            },
+            isDeviceBlocked = { deviceId, ip ->
+                _uiState.value.blockedDeviceIds.contains(deviceId) ||
+                        _uiState.value.blockedDeviceIds.contains(ip)
+            },
+            onConnectionRequested = { request ->
+                handleConnectionRequest(request)
             }
         )
         httpServer?.start()
@@ -540,6 +597,116 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ================= DEVICE ACCESS & HOST APPROVAL =================
+
+    fun handleConnectionRequest(request: ConnectionRequest) {
+        viewModelScope.launch(Dispatchers.Main) {
+            _uiState.update { current ->
+                if (current.blockedDeviceIds.contains(request.id) || current.blockedDeviceIds.contains(request.ip)) {
+                    current
+                } else if (current.approvedDeviceIds.contains(request.id) || current.approvedDeviceIds.contains(request.ip)) {
+                    current
+                } else {
+                    val existing = current.pendingConnectionRequests.filterNot { it.id == request.id || it.ip == request.ip }
+                    current.copy(
+                        pendingConnectionRequests = existing + request,
+                        message = "درخواست اتصال دستگاه جدید: «${request.deviceName}»"
+                    )
+                }
+            }
+        }
+    }
+
+    fun approveConnectionRequest(requestId: String) {
+        _uiState.update { current ->
+            val req = current.pendingConnectionRequests.find { it.id == requestId }
+            val updatedPending = current.pendingConnectionRequests.filterNot { it.id == requestId }
+            val updatedApproved = if (req != null) {
+                current.approvedDeviceIds + req.id + req.ip
+            } else {
+                current.approvedDeviceIds + requestId
+            }
+            current.copy(
+                pendingConnectionRequests = updatedPending,
+                approvedDeviceIds = updatedApproved,
+                message = "اتصال دستگاه «${req?.deviceName ?: requestId}» تایید شد"
+            )
+        }
+    }
+
+    fun approveAllConnectionRequests() {
+        _uiState.update { current ->
+            val newApproved = current.approvedDeviceIds.toMutableSet()
+            current.pendingConnectionRequests.forEach { req ->
+                newApproved.add(req.id)
+                newApproved.add(req.ip)
+            }
+            current.copy(
+                pendingConnectionRequests = emptyList(),
+                approvedDeviceIds = newApproved,
+                message = "همه درخواست‌های اتصال دستگاه‌ها تایید شدند"
+            )
+        }
+    }
+
+    fun rejectConnectionRequest(requestId: String) {
+        _uiState.update { current ->
+            val req = current.pendingConnectionRequests.find { it.id == requestId }
+            val updatedPending = current.pendingConnectionRequests.filterNot { it.id == requestId }
+            current.copy(
+                pendingConnectionRequests = updatedPending,
+                message = "درخواست اتصال دستگاه «${req?.deviceName ?: requestId}» رد شد"
+            )
+        }
+    }
+
+    fun blockDevice(deviceId: String) {
+        _uiState.update { current ->
+            val updatedPending = current.pendingConnectionRequests.filterNot { it.id == deviceId }
+            val updatedApproved = current.approvedDeviceIds - deviceId
+            val updatedSpeakers = current.connectedSpeakers.filterNot { it.id == deviceId || it.ip == deviceId }
+            httpServer?.registeredSpeakers?.remove(deviceId)
+            current.copy(
+                pendingConnectionRequests = updatedPending,
+                approvedDeviceIds = updatedApproved,
+                blockedDeviceIds = current.blockedDeviceIds + deviceId,
+                connectedSpeakers = updatedSpeakers,
+                message = "دستگاه مسدود شد و ارتباط آن قطع گردید"
+            )
+        }
+    }
+
+    fun unblockDevice(deviceId: String) {
+        _uiState.update { current ->
+            current.copy(
+                blockedDeviceIds = current.blockedDeviceIds - deviceId,
+                message = "مسدودسازی دستگاه برداشته شد"
+            )
+        }
+    }
+
+    fun disconnectSpeaker(speakerId: String) {
+        _uiState.update { current ->
+            val updatedApproved = current.approvedDeviceIds - speakerId
+            val updatedSpeakers = current.connectedSpeakers.filterNot { it.id == speakerId }
+            httpServer?.registeredSpeakers?.remove(speakerId)
+            current.copy(
+                approvedDeviceIds = updatedApproved,
+                connectedSpeakers = updatedSpeakers,
+                message = "بلندگو قطع شد"
+            )
+        }
+    }
+
+    fun setHostApprovalRequired(required: Boolean) {
+        _uiState.update {
+            it.copy(
+                isHostApprovalRequired = required,
+                message = if (required) "تأیید دستی میزبان برای اتصال دستگاه‌ها فعال شد" else "اتصال خودکار دستگاه‌ها فعال شد"
+            )
+        }
+    }
+
     private fun startPositionTicker() {
         positionTickerJob?.cancel()
         positionTickerJob = viewModelScope.launch {
@@ -578,6 +745,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopSpeakerMode() {
+        speakerPlaylistSyncJob?.cancel()
+        speakerPlaylistSyncJob = null
         nearbyDiscoveryManager.stopDiscovery()
         liveMicReceiver.stopListening()
         syncEngine.stopSpeakerSync()
@@ -601,16 +770,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectToHost(host: HostBeacon) {
         viewModelScope.launch {
+            val myIp = NetworkUtils.getLocalIpAddress()
+            val deviceId = "device_${Build.MANUFACTURER}_${Build.MODEL}_${myIp}".replace(" ", "_")
+            val deviceName = "بلندگوی ${Build.MODEL}"
+
             _uiState.update {
                 it.copy(
                     speakerStatus = SpeakerConnectionStatus.CONNECTING,
                     connectedHost = host,
-                    message = "در حال اتصال به ${host.hostName}..."
+                    message = "در حال ارسال درخواست اتصال به ${host.hostName}..."
                 )
             }
 
-            val client = SyncClient(host.ip, host.port)
+            val client = SyncClient(host.ip, host.port, deviceId)
             activeSyncClient = client
+
+            // Send registration / heartbeat and verify approval
+            val regSpeaker = DeviceSpeaker(
+                id = deviceId,
+                name = deviceName,
+                ip = myIp,
+                port = 8990,
+                volume = _uiState.value.speakerVolume,
+                latencyOffsetMs = _uiState.value.manualLatencyOffsetMs
+            )
+
+            val initialResult = client.registerOrHeartbeat(regSpeaker)
+
+            when (initialResult) {
+                SpeakerHeartbeatResult.REJECTED -> {
+                    _uiState.update {
+                        it.copy(
+                            speakerStatus = SpeakerConnectionStatus.REJECTED,
+                            message = "درخواست اتصال توسط میزبان رد شد یا دستگاه مسدود است."
+                        )
+                    }
+                    return@launch
+                }
+                SpeakerHeartbeatResult.PENDING -> {
+                    _uiState.update {
+                        it.copy(
+                            speakerStatus = SpeakerConnectionStatus.WAITING_APPROVAL,
+                            message = "درخواست اتصال ارسال شد؛ در انتظار تایید توسط میزبان..."
+                        )
+                    }
+
+                    // Poll while waiting for host approval
+                    var isApproved = false
+                    while (activeSyncClient == client && _uiState.value.speakerStatus == SpeakerConnectionStatus.WAITING_APPROVAL) {
+                        delay(1500)
+                        val pollResult = client.registerOrHeartbeat(regSpeaker)
+                        if (pollResult == SpeakerHeartbeatResult.APPROVED) {
+                            isApproved = true
+                            break
+                        } else if (pollResult == SpeakerHeartbeatResult.REJECTED) {
+                            _uiState.update {
+                                it.copy(
+                                    speakerStatus = SpeakerConnectionStatus.REJECTED,
+                                    message = "درخواست اتصال توسط میزبان رد شد."
+                                )
+                            }
+                            return@launch
+                        }
+                    }
+
+                    if (!isApproved) {
+                        return@launch
+                    }
+                }
+                SpeakerHeartbeatResult.APPROVED, SpeakerHeartbeatResult.FAILED -> {
+                    // Proceed to clock sync
+                }
+            }
 
             _uiState.update { it.copy(speakerStatus = SpeakerConnectionStatus.SYNCING_CLOCK) }
             val syncSuccess = client.synchronizeClock()
@@ -620,25 +851,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         speakerStatus = SpeakerConnectionStatus.CONNECTED,
                         clockRttMs = client.roundTripDelayMs,
-                        message = "اتصال و همگام‌سازی صدا با موفقیت برقرار شد!"
+                        message = "اتصال و همگام‌سازی صدا با تأیید میزبان برقرار شد!"
                     )
                 }
 
-                // Register with Host
-                val deviceName = "بلندگوی ${Build.MODEL}"
-                client.sendHeartbeat(
-                    DeviceSpeaker(
-                        id = NetworkUtils.getLocalIpAddress(),
-                        name = deviceName,
-                        ip = NetworkUtils.getLocalIpAddress(),
-                        port = 8990,
-                        volume = _uiState.value.speakerVolume,
-                        latencyOffsetMs = _uiState.value.manualLatencyOffsetMs
-                    )
-                )
+                // Register with Host final heartbeat
+                client.sendHeartbeat(regSpeaker)
 
                 // Start audio sync loop (notifies updates through syncEngine.onStateUpdated)
                 syncEngine.startSpeakerSync(client)
+
+                // Start real-time shared playlist sync loop
+                startSpeakerPlaylistSyncLoop(client)
             } else {
                 _uiState.update {
                     it.copy(
@@ -742,44 +966,109 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ================= SHARED PLAYLIST LOGIC =================
+    // ================= SHARED PLAYLIST LOGIC & REAL-TIME SYNC =================
+
+    private fun startSpeakerPlaylistSyncLoop(client: SyncClient) {
+        speakerPlaylistSyncJob?.cancel()
+        speakerPlaylistSyncJob = viewModelScope.launch(Dispatchers.IO) {
+            // Initial fetch immediately upon connection
+            refreshSpeakerPlaylist(client)
+
+            // Periodic sync polling to ensure all clients remain synchronized
+            while (isActive && activeSyncClient == client && _uiState.value.mode == AppMode.SPEAKER) {
+                delay(1500)
+                try {
+                    refreshSpeakerPlaylist(client)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Speaker playlist periodic sync error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun refreshSpeakerPlaylist(client: SyncClient) {
+        try {
+            val hostPlaylist = client.fetchPlaylist()
+            if (hostPlaylist.isNotEmpty()) {
+                _uiState.update { current ->
+                    val curTrack = if (hostPlaylist.any { it.id == current.currentTrack.id }) {
+                        current.currentTrack
+                    } else {
+                        hostPlaylist.firstOrNull() ?: current.currentTrack
+                    }
+                    current.copy(playlist = hostPlaylist, currentTrack = curTrack)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshSpeakerPlaylist error: ${e.message}")
+        }
+    }
 
     fun addTrackToPlaylist(track: Track) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val count = playlistDao.getAllTracksSnapshot().size
-            playlistDao.insertTrack(
-                TrackEntity(
-                    id = track.id,
-                    title = track.title,
-                    artist = track.artist,
-                    durationMs = track.durationMs,
-                    genre = track.genre,
-                    audioUri = track.audioUri,
-                    addedBy = track.addedBy,
-                    votes = track.votes,
-                    orderIndex = count
+        if (_uiState.value.mode == AppMode.HOST) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val count = playlistDao.getAllTracksSnapshot().size
+                playlistDao.insertTrack(
+                    TrackEntity(
+                        id = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        durationMs = track.durationMs,
+                        genre = track.genre,
+                        audioUri = track.audioUri,
+                        addedBy = track.addedBy,
+                        votes = track.votes,
+                        orderIndex = count
+                    )
                 )
-            )
-            _uiState.update { it.copy(message = "قطعه «${track.title}» به پلی‌لیست مشترک اضافه شد") }
-        }
-
-        // If speaker, notify host
-        if (_uiState.value.mode == AppMode.SPEAKER) {
-            viewModelScope.launch {
-                activeSyncClient?.addTrackToPlaylist(track)
+                _uiState.update { it.copy(message = "قطعه «${track.title}» به پلی‌لیست مشترک اضافه شد") }
+            }
+        } else {
+            // Speaker adds track to Host and instantly synchronizes
+            viewModelScope.launch(Dispatchers.IO) {
+                val success = activeSyncClient?.addTrackToPlaylist(track) ?: false
+                if (success) {
+                    activeSyncClient?.let { refreshSpeakerPlaylist(it) }
+                    _uiState.update { it.copy(message = "قطعه «${track.title}» به صورت بی‌درنگ به پلی‌لیست مشترک اضافه شد") }
+                } else {
+                    _uiState.update { it.copy(message = "خطا در ارسال قطعه به میزبان (بررسی وضعیت اتصال)") }
+                }
             }
         }
     }
 
     fun upvoteTrack(trackId: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            playlistDao.upvoteTrack(trackId)
+        if (_uiState.value.mode == AppMode.HOST) {
+            viewModelScope.launch(Dispatchers.IO) {
+                playlistDao.upvoteTrack(trackId)
+            }
+        } else {
+            viewModelScope.launch(Dispatchers.IO) {
+                val success = activeSyncClient?.upvoteTrack(trackId) ?: false
+                if (success) {
+                    activeSyncClient?.let { refreshSpeakerPlaylist(it) }
+                }
+            }
         }
     }
 
     fun removeTrackFromPlaylist(trackId: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            playlistDao.deleteTrack(trackId)
+        if (_uiState.value.mode == AppMode.HOST) {
+            viewModelScope.launch(Dispatchers.IO) {
+                playlistDao.deleteTrack(trackId)
+                _uiState.update { it.copy(message = "قطعه از پلی‌لیست مشترک حذف شد") }
+            }
+        } else {
+            // Speaker removes track from Host and instantly synchronizes
+            viewModelScope.launch(Dispatchers.IO) {
+                val success = activeSyncClient?.removeTrackFromPlaylist(trackId) ?: false
+                if (success) {
+                    activeSyncClient?.let { refreshSpeakerPlaylist(it) }
+                    _uiState.update { it.copy(message = "قطعه از پلی‌لیست مشترک حذف گردید") }
+                } else {
+                    _uiState.update { it.copy(message = "خطا در حذف قطعه از میزبان") }
+                }
+            }
         }
     }
 
@@ -795,6 +1084,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             votes = 1
         )
         addTrackToPlaylist(newTrack)
+    }
+
+    // ================= STORAGE FILE MANAGER & SEARCH =================
+
+    fun scanStorageAudio() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isStorageScanning = true) }
+            val files = StorageAudioScanner.queryInternalStorageAudio(getApplication())
+            _uiState.update {
+                it.copy(
+                    storageAudioFiles = files,
+                    isStorageScanning = false
+                )
+            }
+        }
+    }
+
+    fun setStorageSearchQuery(query: String) {
+        _uiState.update { it.copy(storageSearchQuery = query) }
+    }
+
+    fun setStorageFolderFilter(folder: String) {
+        _uiState.update { it.copy(selectedStorageFolder = folder) }
+    }
+
+    fun toggleStorageFileSelection(fileId: Long) {
+        _uiState.update { current ->
+            val set = current.selectedStorageFileIds.toMutableSet()
+            if (set.contains(fileId)) {
+                set.remove(fileId)
+            } else {
+                set.add(fileId)
+            }
+            current.copy(selectedStorageFileIds = set)
+        }
+    }
+
+    fun selectAllStorageFiles(fileIds: List<Long>) {
+        _uiState.update { it.copy(selectedStorageFileIds = fileIds.toSet()) }
+    }
+
+    fun clearStorageFileSelection() {
+        _uiState.update { it.copy(selectedStorageFileIds = emptySet()) }
+    }
+
+    fun addSingleStorageFileToPlaylist(file: StorageAudioFile) {
+        val track = file.toTrack()
+        addTrackToPlaylist(track)
+        _uiState.update {
+            it.copy(message = "آهنگ «${track.title}» به پلی‌لیست افزوده شد")
+        }
+    }
+
+    fun addSelectedStorageFilesToPlaylist() {
+        val selectedIds = _uiState.value.selectedStorageFileIds
+        if (selectedIds.isEmpty()) return
+
+        val filesToAdd = _uiState.value.storageAudioFiles.filter { selectedIds.contains(it.id) }
+        viewModelScope.launch(Dispatchers.IO) {
+            filesToAdd.forEach { file ->
+                val track = file.toTrack()
+                playlistDao.insertTrack(
+                    TrackEntity(
+                        id = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        durationMs = track.durationMs,
+                        genre = track.genre,
+                        audioUri = track.audioUri,
+                        addedBy = track.addedBy,
+                        votes = track.votes
+                    )
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    selectedStorageFileIds = emptySet(),
+                    message = "${PersianFormatters.toPersianDigits(filesToAdd.size.toString())} آهنگ به پلی‌لیست افزوده شد"
+                )
+            }
+        }
     }
 
     override fun onCleared() {

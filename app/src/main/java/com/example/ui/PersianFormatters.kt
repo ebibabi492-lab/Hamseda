@@ -32,4 +32,11 @@ object PersianFormatters {
             "${toPersianDigits(ms.toString())} میلی‌ثانیه"
         }
     }
+
+    fun formatFileSize(bytes: Long): String {
+        if (bytes <= 0) return "۰ مگابایت"
+        val mb = bytes / (1024.0 * 1024.0)
+        val formatted = String.format("%.1f", mb)
+        return "${toPersianDigits(formatted)} مگابایت"
+    }
 }

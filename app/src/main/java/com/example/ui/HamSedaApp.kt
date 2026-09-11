@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.QueueMusic
@@ -37,6 +38,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -54,7 +56,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,6 +70,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ui.components.AppManualDialog
 import com.example.ui.screens.HostScreen
 import com.example.ui.screens.RemoteControlScreen
 import com.example.ui.screens.SharedPlaylistScreen
@@ -78,6 +83,7 @@ fun HamSedaApp(
 ) {
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showManualDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.message) {
         state.message?.let { msg ->
@@ -100,7 +106,8 @@ fun HamSedaApp(
                     batteryPercent = state.batteryPercent,
                     isCharging = state.isBatteryCharging,
                     onModeSelected = { mode -> viewModel.setAppMode(mode) },
-                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
+                    onToggleBatterySaver = { viewModel.toggleBatterySaver() },
+                    onOpenManual = { showManualDialog = true }
                 )
             },
             bottomBar = {
@@ -144,7 +151,15 @@ fun HamSedaApp(
                                     onSpeakerVolumeChange = { id, vol -> viewModel.setSpeakerVolume(id, vol) },
                                     onToggleSpeakerMute = { id -> viewModel.toggleSpeakerMute(id) },
                                     onToggleLiveMic = { viewModel.toggleLiveMic() },
-                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
+                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() },
+                                    onApproveRequest = { id -> viewModel.approveConnectionRequest(id) },
+                                    onRejectRequest = { id -> viewModel.rejectConnectionRequest(id) },
+                                    onApproveAllRequests = { viewModel.approveAllConnectionRequests() },
+                                    onBlockDevice = { id -> viewModel.blockDevice(id) },
+                                    onUnblockDevice = { id -> viewModel.unblockDevice(id) },
+                                    onDisconnectSpeaker = { id -> viewModel.disconnectSpeaker(id) },
+                                    onToggleApprovalRequired = { req -> viewModel.setHostApprovalRequired(req) },
+                                    onOpenManual = { showManualDialog = true }
                                 )
                             } else {
                                 SpeakerScreen(
@@ -155,7 +170,8 @@ fun HamSedaApp(
                                     onManualOffsetChange = { offset -> viewModel.setManualLatencyOffset(offset) },
                                     onSpeakerVolumeChange = { vol -> viewModel.setLocalSpeakerVolume(vol) },
                                     onRefreshDiscovery = { viewModel.refreshDiscovery() },
-                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() }
+                                    onToggleBatterySaver = { viewModel.toggleBatterySaver() },
+                                    onOpenManual = { showManualDialog = true }
                                 )
                             }
                         }
@@ -169,7 +185,15 @@ fun HamSedaApp(
                                 onAddTrack = { track -> viewModel.addTrackToPlaylist(track) },
                                 onAddLocalFileTrack = { title, artist, uri, dur ->
                                     viewModel.addLocalFileTrack(title, artist, uri, dur)
-                                }
+                                },
+                                onSearchStorageQueryChange = { q -> viewModel.setStorageSearchQuery(q) },
+                                onFolderChange = { f -> viewModel.setStorageFolderFilter(f) },
+                                onToggleFileSelection = { id -> viewModel.toggleStorageFileSelection(id) },
+                                onSelectAllFiles = { ids -> viewModel.selectAllStorageFiles(ids) },
+                                onClearFileSelection = { viewModel.clearStorageFileSelection() },
+                                onAddSingleStorageFile = { file -> viewModel.addSingleStorageFileToPlaylist(file) },
+                                onAddSelectedStorageFiles = { viewModel.addSelectedStorageFilesToPlaylist() },
+                                onRefreshStorageScan = { viewModel.scanStorageAudio() }
                             )
                         }
 
@@ -192,6 +216,10 @@ fun HamSedaApp(
                     }
                 }
             }
+
+            if (showManualDialog) {
+                AppManualDialog(onDismiss = { showManualDialog = false })
+            }
         }
     }
 }
@@ -206,7 +234,8 @@ private fun HamSedaTopBar(
     batteryPercent: Int,
     isCharging: Boolean,
     onModeSelected: (AppMode) -> Unit,
-    onToggleBatterySaver: () -> Unit
+    onToggleBatterySaver: () -> Unit,
+    onOpenManual: () -> Unit = {}
 ) {
     TopAppBar(
         title = {
@@ -240,11 +269,24 @@ private fun HamSedaTopBar(
                     )
                 }
 
-                // Right side: Battery Saver Quick Toggle & Mode Selector Pill
+                // Right side: Battery Saver Quick Toggle, Manual button & Mode Selector Pill
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // In-App Manual button
+                    IconButton(
+                        onClick = onOpenManual,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("btn_topbar_manual")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.HelpOutline,
+                            contentDescription = "راهنمای جامع نرم‌افزار هم‌صدا",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     // Battery Saver quick badge
                     Surface(
                         shape = RoundedCornerShape(50),

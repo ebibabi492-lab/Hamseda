@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.example.audio.SynthesizedMusicLibrary
+import com.example.model.ConnectionRequest
 import com.example.model.DeviceSpeaker
 import com.example.model.SyncPlaybackState
 import com.example.model.Track
@@ -27,7 +28,13 @@ class AudioHttpServer(
     private val getPlaylist: () -> List<Track>,
     private val onControlAction: (action: String, value: String?) -> Unit,
     private val onAddTrackToPlaylist: (Track) -> Unit,
-    private val onSpeakerHeartbeat: (DeviceSpeaker) -> Unit
+    private val onDeleteTrackFromPlaylist: (String) -> Unit = {},
+    private val onUpvoteTrackInPlaylist: (String) -> Unit = {},
+    private val onSpeakerHeartbeat: (DeviceSpeaker) -> Unit,
+    private val isApprovalRequired: () -> Boolean = { true },
+    private val isDeviceApproved: (deviceId: String, ip: String) -> Boolean = { _, _ -> true },
+    private val isDeviceBlocked: (deviceId: String, ip: String) -> Boolean = { _, _ -> false },
+    private val onConnectionRequested: (ConnectionRequest) -> Unit = {}
 ) {
     private val TAG = "AudioHttpServer"
     private var serverSocket: ServerSocket? = null
@@ -111,6 +118,8 @@ class AudioHttpServer(
             }
 
             val clientIp = socket.inetAddress.hostAddress ?: "Unknown"
+            val reqDeviceId = headers["x-device-id"]
+                ?: uri.substringAfter("deviceId=", "").substringBefore("&").ifEmpty { clientIp }
 
             // Route handling
             when {
@@ -127,8 +136,33 @@ class AudioHttpServer(
                 }
 
                 uri.startsWith("/api/state") -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp)) {
+                        sendJsonResponse(out, 403, """{"status":"blocked","approved":false,"isPlaying":false,"error":"دستگاه شما توسط میزبان مسدود شده است"}""")
+                        return
+                    }
+                    if (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp)) {
+                        val pendingJson = JSONObject().apply {
+                            put("status", "pending")
+                            put("approved", false)
+                            put("isPlaying", false)
+                            put("trackId", "")
+                            put("trackTitle", "در انتظار تایید میزبان...")
+                            put("artist", "")
+                            put("positionMs", 0L)
+                            put("durationMs", 0L)
+                            put("hostTimestamp", System.currentTimeMillis())
+                            put("scheduledStartHostTime", 0L)
+                            put("masterVolume", 0.0)
+                            put("isLiveMicActive", false)
+                        }
+                        sendJsonResponse(out, 200, pendingJson.toString())
+                        return
+                    }
+
                     val state = getCurrentState()
                     val json = JSONObject().apply {
+                        put("status", "approved")
+                        put("approved", true)
                         put("trackId", state.trackId)
                         put("trackTitle", state.trackTitle)
                         put("artist", state.artist)
@@ -139,11 +173,16 @@ class AudioHttpServer(
                         put("scheduledStartHostTime", state.scheduledStartHostTime)
                         put("masterVolume", state.masterVolume.toDouble())
                         put("isLiveMicActive", state.isLiveMicActive)
+                        put("playlistVersion", state.playlistVersion)
                     }
                     sendJsonResponse(out, 200, json.toString())
                 }
 
                 uri.startsWith("/api/playlist/add") && method == "POST" -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp) || (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp))) {
+                        sendJsonResponse(out, 403, """{"error":"Forbidden: Device not approved by host"}""")
+                        return
+                    }
                     try {
                         val obj = JSONObject(body)
                         val newTrack = Track(
@@ -157,6 +196,44 @@ class AudioHttpServer(
                         )
                         onAddTrackToPlaylist(newTrack)
                         sendJsonResponse(out, 200, """{"status":"ok"}""")
+                    } catch (e: Exception) {
+                        sendJsonResponse(out, 400, """{"error":"${e.message}"}""")
+                    }
+                }
+
+                (uri.startsWith("/api/playlist/remove") || uri.startsWith("/api/playlist/delete")) && method == "POST" -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp) || (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp))) {
+                        sendJsonResponse(out, 403, """{"error":"Forbidden: Device not approved by host"}""")
+                        return
+                    }
+                    try {
+                        val obj = JSONObject(body)
+                        val trackId = obj.optString("id")
+                        if (trackId.isNotEmpty()) {
+                            onDeleteTrackFromPlaylist(trackId)
+                            sendJsonResponse(out, 200, """{"status":"ok"}""")
+                        } else {
+                            sendJsonResponse(out, 400, """{"error":"Track id is required"}""")
+                        }
+                    } catch (e: Exception) {
+                        sendJsonResponse(out, 400, """{"error":"${e.message}"}""")
+                    }
+                }
+
+                uri.startsWith("/api/playlist/upvote") && method == "POST" -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp) || (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp))) {
+                        sendJsonResponse(out, 403, """{"error":"Forbidden: Device not approved by host"}""")
+                        return
+                    }
+                    try {
+                        val obj = JSONObject(body)
+                        val trackId = obj.optString("id")
+                        if (trackId.isNotEmpty()) {
+                            onUpvoteTrackInPlaylist(trackId)
+                            sendJsonResponse(out, 200, """{"status":"ok"}""")
+                        } else {
+                            sendJsonResponse(out, 400, """{"error":"Track id is required"}""")
+                        }
                     } catch (e: Exception) {
                         sendJsonResponse(out, 400, """{"error":"${e.message}"}""")
                     }
@@ -183,6 +260,10 @@ class AudioHttpServer(
                 }
 
                 uri.startsWith("/api/control") && method == "POST" -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp) || (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp))) {
+                        sendJsonResponse(out, 403, """{"error":"Forbidden: Device not approved by host"}""")
+                        return
+                    }
                     try {
                         val obj = JSONObject(body)
                         val action = obj.optString("action")
@@ -197,11 +278,22 @@ class AudioHttpServer(
                 uri.startsWith("/api/register_speaker") || uri.startsWith("/api/heartbeat") -> {
                     try {
                         val obj = if (body.isNotEmpty()) JSONObject(body) else JSONObject()
-                        val speakerId = obj.optString("id", clientIp)
+                        val speakerId = obj.optString("id", reqDeviceId)
                         val speakerName = obj.optString("name", "بلندگو ($clientIp)")
                         val volume = obj.optDouble("volume", 1.0).toFloat()
                         val latency = obj.optLong("latency", 0L)
                         val rtt = obj.optLong("rtt", 0L)
+
+                        if (isDeviceBlocked(speakerId, clientIp)) {
+                            sendJsonResponse(out, 403, """{"status":"blocked","approved":false,"message":"دستگاه توسط میزبان مسدود شده است"}""")
+                            return
+                        }
+
+                        if (isApprovalRequired() && !isDeviceApproved(speakerId, clientIp)) {
+                            onConnectionRequested(ConnectionRequest(speakerId, speakerName, clientIp))
+                            sendJsonResponse(out, 200, """{"status":"pending","approved":false,"message":"در انتظار تایید میزبان..."}""")
+                            return
+                        }
 
                         val speaker = DeviceSpeaker(
                             id = speakerId,
@@ -215,13 +307,17 @@ class AudioHttpServer(
                         )
                         registeredSpeakers[speakerId] = speaker
                         onSpeakerHeartbeat(speaker)
-                        sendJsonResponse(out, 200, """{"status":"ok"}""")
+                        sendJsonResponse(out, 200, """{"status":"approved","approved":true}""")
                     } catch (e: Exception) {
                         sendJsonResponse(out, 400, """{"error":"${e.message}"}""")
                     }
                 }
 
                 uri.startsWith("/api/stream") -> {
+                    if (isDeviceBlocked(reqDeviceId, clientIp) || (isApprovalRequired() && !isDeviceApproved(reqDeviceId, clientIp))) {
+                        sendJsonResponse(out, 403, """{"error":"Forbidden: Device not approved by host"}""")
+                        return
+                    }
                     serveAudioStream(out, headers)
                 }
 

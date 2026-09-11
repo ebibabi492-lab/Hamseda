@@ -33,7 +33,8 @@ data class SyncPlaybackState(
     val hostTimestamp: Long = 0L,
     val scheduledStartHostTime: Long = 0L,
     val masterVolume: Float = 1.0f,
-    val isLiveMicActive: Boolean = false
+    val isLiveMicActive: Boolean = false,
+    val playlistVersion: Long = 0L
 )
 
 data class HostBeacon(
@@ -43,4 +44,44 @@ data class HostBeacon(
     val currentTrackTitle: String,
     val timestamp: Long = System.currentTimeMillis(),
     val discoveryType: String = "وای‌فای محلی"
+)
+
+data class StorageAudioFile(
+    val id: Long,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val uriString: String,
+    val folderName: String,
+    val fileName: String,
+    val mimeType: String = "audio/mpeg"
+) {
+    fun toTrack(): Track {
+        return Track(
+            id = "storage_${id}_${System.currentTimeMillis()}",
+            title = title.ifBlank { fileName.substringBeforeLast('.') },
+            artist = if (artist.isBlank() || artist == "<unknown>") "حافظه دستگاه" else artist,
+            durationMs = if (durationMs > 0) durationMs else 180000L,
+            genre = folderName.ifBlank { "موسیقی گوشی" },
+            audioUri = uriString,
+            addedBy = "حافظه گوشی",
+            votes = 1
+        )
+    }
+}
+
+data class ConnectionRequest(
+    val id: String,
+    val deviceName: String,
+    val ip: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class AuthorizedDevice(
+    val id: String,
+    val deviceName: String,
+    val ip: String,
+    val approvedAt: Long = System.currentTimeMillis()
 )
